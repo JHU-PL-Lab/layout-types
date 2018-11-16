@@ -1,9 +1,8 @@
 type ident = Ident of string;;
 type label = Lab of string;;
 
-type slot = Slot of int;;
 type ind = Ind of int;;
-type bt = LRecord of (slot * label * bt) list | LInt | LTrue | LFalse | LFun | LStar | LEmpty;;
+type bt = LRecord of (label * bt) list | LInt | LTrue | LFalse | LFun | LStar | LEmpty;;
 type t =  T of bt * (bt list);;
 type tau = Tau of (t * ind) list;;
 
@@ -17,14 +16,9 @@ and clause = Clause of ident * tau * body
 and expr = clause list
 and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
 
-exception VariableNotFound;;
-exception IncorrectType of string;;
 exception BodyNotMatched;;
 exception ClauseNotMatched;;
-exception InvalidPatternMatch;;
-exception PatternNotMatched;;
 exception ForkFailed;;
-exception TypeCheckError;;
 exception CannotFindTau;;
 
 let global_env = ref [];;
@@ -49,7 +43,7 @@ let rec pattern_match x (p:pattern) (ev:env) =
     let rec iterate_record r pp =
       (match (r,pp) with
        | ((Lab l1, Ident x1)::tl, (Lab l2, p2)) -> if l1 = l2 then (pattern_match x1 p2 eevv) else (iterate_record tl pp)
-       | _ -> raise InvalidPatternMatch) in
+       | _ -> false) in
     (let rec iterate_record_pattern r p1 =
        match p1 with
        | hd::tl -> if (iterate_record r hd) then iterate_record_pattern r tl else false
@@ -225,7 +219,7 @@ let rec is_subtype_t (t1:t) (t2:t) =
     | (LRecord l1, LRecord l2) ->
       let rec iterate_record l1 e2 =
         match (l1,e2) with
-        | ((s1, Lab lab1, bt1)::tl,(s2, Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
+        | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
         | _ -> false
       in (let rec check_record l1 l2 =
             match l2 with
@@ -269,20 +263,20 @@ let rec record_soundness typedec (program:expr) =
   let get_canonical_record_wrapper r =
     (let rec get_canonical_record r =
       match r with
-      | (slot, Lab lab, T (bt, neg))::tl ->
+      | (Lab lab, T (bt, neg))::tl ->
         let (r2, neg2) = get_canonical_record tl
         in let rec flattern_neg neg =
              match neg with
-             | btn::ttll -> (LRecord [(Slot 0, Lab lab, btn)])::(flattern_neg ttll)
+             | btn::ttll -> (LRecord [(Lab lab, btn)])::(flattern_neg ttll)
              | _ -> []
-        in ((slot , Lab lab, bt)::r2,(flattern_neg neg)@neg2)
+        in (( Lab lab, bt)::r2,(flattern_neg neg)@neg2)
       | _ -> ([],[])
     in let (bt, neg) = get_canonical_record r
     in T (LRecord bt, neg)) in
   let get_field_product r typedec =
     (let rec iterate_res lab t ind res =
       match res with
-      | (record_list, nounce_list)::tl -> ((Slot 0, lab, t)::record_list,ind::nounce_list)::(iterate_res lab t ind tl)
+      | (record_list, nounce_list)::tl -> ((lab, t)::record_list,ind::nounce_list)::(iterate_res lab t ind tl)
       | _ -> []
     in let rec iterate_disjuncts lab disjuncts res =
          match disjuncts with
@@ -313,7 +307,6 @@ let rec record_soundness typedec (program:expr) =
   | _ -> (true, []));;
 
 (* Pattern Complete *)
-(*Is LEmpty always true? *)
 let rec tb_pattern_match bt pattern =
   match (bt, pattern) with
   | (LEmpty, _) -> true
@@ -325,7 +318,7 @@ let rec tb_pattern_match bt pattern =
   | (LRecord lr, PRecord pr) ->
     let rec iterate_record lr labp pa =
       match lr with
-      | (Slot s1, Lab labr, btr)::tl -> if labp = labr then tb_pattern_match btr pa else iterate_record tl labp pa
+      | (Lab labr, btr)::tl -> if labp = labr then tb_pattern_match btr pa else iterate_record tl labp pa
       | _ -> false
     in let rec iterate_pattern lr pr =
          match pr with
@@ -357,7 +350,7 @@ let rec tb_pattern_not_match bt pattern =
   | (LRecord lr, PRecord pr) ->
     let rec iterate_record lr labp pa=
       match lr with
-      | (Slot s1, Lab labr, btr)::tl -> if labr = labp then tb_pattern_not_match btr pa else iterate_record tl labp pa
+      | (Lab labr, btr)::tl -> if labr = labp then tb_pattern_not_match btr pa else iterate_record tl labp pa
       | _ -> false
     in let rec iterate_pattern lr pr =
          match pr with
@@ -403,37 +396,67 @@ let typecheck (program:expr) =
   ((atomic_typed program) && (sound_subtype typedec !global) && recordsound && patterncomplete,rou, delta);;
 
 (*
-x1 = 1
-x2 = 2
-x3 = x1+x2
+x1:Int = 1
+x2:Int = 2
+x3:Int = x1+x2
+
 should return 3
 global_env = {x1->1, x2->2, x3->3}
+sound = true
+rou = []
+delta = []
 *)
 let in1 = [Clause (Ident "x1",Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x2",Tau [( T (LInt, []), Ind 2)], Int 2);
            Clause (Ident "x3",Tau [( T (LInt, []), Ind 3)], Plus (Ident "x1", Ident "x2"))];;
 let (sound1, rou1, delta1) = typecheck in1;;
 
+(*
+x1:True = True
+x2:False = False
+x3:[True;False] = x1 && x2
+
+should return False
+global_env = {x1->True, x2->False, x3->False}
+sound = True
+rou = []
+delta = []
+*)
 let in2 = [Clause (Ident "x1",Tau [( T (LTrue, []), Ind 1)], True);
            Clause (Ident "x2",Tau [( T (LFalse, []), Ind 2)], False);
            Clause (Ident "x3",Tau [( T (LTrue, []), Ind 3); ( T (LFalse, []), Ind 4)], And (Ident "x1", Ident "x2"))];;
 let (sound2, rou2, delta2) = typecheck in2;;
 
-(* x1 = 1
-   x2 = x1*)
+(*
+x1:Int = 1
+x2:Int = x1
+
+should return 1
+gloval_env = {x1->1, x2->1, x2->x1}
+sound = true
+rou = []
+delta = []
+*)
 let in3 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x2", Tau [( T (LInt, []), Ind 2)], Var(Ident "x1"))];;
 let (sound3, rou3, delta3) = typecheck in3;;
 
 (*
-x1:LInt = 1
-x2:LTrue = True
-x3 : {1:a:Int; 2: b: True} = {a:x1; b:x2}
-x4 :LInt = Match x3 with
-      | {PRecord [a:PInt]} -> x5:LInt = Int 3*)
+x1:[(LInt-{}, Ind 1)] = 1
+x2:[(LTrue-{}, Ind 2)] = True
+x3 : [({a:Int; b: True}-{}, Ind 3)] = {a:x1; b:x2}
+x4 :[(LInt-{}, Ind 4)] = Match x3 with
+      | {PRecord [a:PInt]} -> x5:LInt = Int 3
+
+should return 3
+global_env = {x1->1, x2->True, x3->Closure({a:x1; b:x2}, {x1->1;x2->True}); x4-> 3; x5->3; x4->x5}
+sound = true
+rou:[(x3, [(1,2)->3])]
+delta: [(x4, [(3->1)])]
+*)
 let in4 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
-           Clause (Ident "x3", Tau [( T (LRecord [(Slot 1, Lab "a", LInt); (Slot 2, Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
            Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
 let (sound4, rou4, delta4) = typecheck in4;;
 
@@ -441,18 +464,18 @@ let (sound4, rou4, delta4) = typecheck in4;;
 (*
 x1:LInt = 1
 x2:LTrue = True
-x3 : [{1:a:LStar};({2:b:LStar} - {3:c:LStar})] = {a:x1; b:x2}
+x3 : [{a:LStar};({b:LStar} - {c:LStar})] = {a:x1; b:x2}
 x4 :LInt = Match x3 with
-      | {PRecord [a:PStar; c: PStar]} -> x5:LInt = Int 3*)
+      | {PRecord [a:PStar; c: PStar]} -> x5:LInt = Int 3
+
+sound = false
+*)
 
 let in5 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
-           Clause (Ident "x3", Tau [( T (LRecord [(Slot 1, Lab "a", LStar)], []), Ind 3); (T (LRecord [(Slot 2, Lab "b", LStar)], [LRecord [(Slot 3, Lab "c", LStar)]]), Ind 6)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LStar)], []), Ind 3); (T (LRecord [(Lab "b", LStar)], [LRecord [(Lab "c", LStar)]]), Ind 6)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
            Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PStar);(Lab "c", PStar)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
-let atcheck5 = atomic_typed in5;;
-let typedec5 = get_all_typedec in5;;
-let patterncomplete5 = pattern_complete typedec5 in5;;
-let recordsoudness5 = record_soundness typedec5 in5;;
+
 let (sound5, rou5, delta5) = typecheck in5;;
 
 (*
@@ -461,44 +484,79 @@ x2 : LFalse = false
 x3 : {q:LStar} - [{q:LInt}, {q:LFalse}] = {q:x1}
 x4 : {r:LStar} - [{r: LInt}] = {r: x2}
 x5 : {a: {q:LStar}; b: {r:LStar}} - [{a: {q:LInt}}; {a:{q:LFalse}};
-                                      {b:{r:LInt}}] = {a: x3, b:x4} *)
+                                      {b:{r:LInt}}] = {a: x3, b:x4}
+
+sound = false ****should be fixed
+*)
 
 let in6 = [Clause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
            Clause (Ident "x2", Tau [(T (LFalse, []), Ind 2)], False);
-           Clause (Ident "x3", Tau [(T (LRecord [(Slot 1, Lab "q", LStar)],[LRecord [(Slot 1, Lab "q", LInt)];LRecord [(Slot 1, Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
-           Clause (Ident "x4", Tau [(T (LRecord [(Slot 2, Lab "r", LStar)], [LRecord [(Slot 2, Lab "r", LInt)]]), Ind 4)], Record [(Lab "r", Ident "x2")]);
+           Clause (Ident "x3", Tau [(T (LRecord [(Lab "q", LStar)],[LRecord [(Lab "q", LInt)];LRecord [(Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
+           Clause (Ident "x4", Tau [(T (LRecord [(Lab "r", LStar)], [LRecord [(Lab "r", LInt)]]), Ind 4)], Record [(Lab "r", Ident "x2")]);
            Clause (Ident "x5",
-                   Tau [(T (LRecord [(Slot 3, Lab "a", LRecord [(Slot 1, Lab "q", LStar)]);(Slot 4, Lab "b", LRecord [(Slot 2, Lab "r", LStar)])],
-                            [LRecord [(Slot 3, Lab "a", LRecord [(Slot 1, Lab "q", LInt)])];
-                             LRecord [(Slot 3, Lab "a", LRecord [(Slot 1, Lab "q", LFalse)])];
-                             LRecord [(Slot 4, Lab "b", LRecord [(Slot 2, Lab "r", LInt)])]]), Ind 5)],
+                   Tau [(T (LRecord [(Lab "a", LRecord [(Lab "q", LStar)]);(Lab "b", LRecord [(Lab "r", LStar)])],
+                            [LRecord [(Lab "a", LRecord [(Lab "q", LInt)])];
+                             LRecord [(Lab "a", LRecord [(Lab "q", LFalse)])];
+                             LRecord [(Lab "b", LRecord [(Lab "r", LInt)])]]), Ind 5)],
                    Record [(Lab "a", Ident "x3"); (Lab "b", Ident "x4")])
           ];;
-let typedec6 = get_all_typedec in6;;
-let recordsoudness6 = record_soundness typedec6 in6;;
-
+let (sound6, rou6, delta6) = typecheck in6;;
 
 (*
 x1 : LTrue = True
-x2 : LFalse = false
 x3 : {q:LStar} - [{q:LInt}, {q:LFalse}] = {q:x1}
-x4 : {r:LStar} - [{r: LInt}] = {r: x2} *)
+sound = false
+*)
 
 let in7 = [Clause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
-           Clause (Ident "x2", Tau [(T (LFalse, []), Ind 2)], False);
-           Clause (Ident "x3", Tau [(T (LRecord [(Slot 1, Lab "q", LStar)],[LRecord [(Slot 1, Lab "q", LInt)];LRecord [(Slot 1, Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
-           Clause (Ident "x4", Tau [(T (LRecord [(Slot 2, Lab "r", LStar)], [LRecord [(Slot 2, Lab "r", LInt)]]), Ind 4)], Record [(Lab "r", Ident "x2")])
+           Clause (Ident "x3", Tau [(T (LRecord [(Lab "q", LStar)],[LRecord [(Lab "q", LInt)];LRecord [(Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
           ];;
-let typedec7 = get_all_typedec in7;;
-let recordsoudness7 = record_soundness typedec7 in7;;
+let (sound7, rou7, delta7) = typecheck in7;;
 
 (*
-x1 : LTrue = True
-x3 : {q:LStar} - [{q:LInt}, {q:LFalse}] = {q:x1} *)
+x1:[(Int-{}, Ind 1);(True-{}, Ind 2)] = 1
+x2:[(True-{}, Ind 3);(False-{}, Ind 4)] = True
+x3 : [({a:Int; b: True}-{}, Ind 5);
+      ({a:Int; b: False}-{}, Ind 6);
+      ({a:True; b: True}-{}, Ind 7);
+      ({a:True; b: False}-{}, Ind 8);] = {a:x1; b:x2}
+x4 :[(LInt-{}, Ind 9)] = Match x3 with
+      | {PRecord [a:PInt]} -> x5:[(LInt-{}, Ind 10)] = Int 3
+      | {PRecord [a:PTrue]} -> x6:[(LInt-{}, Ind 11)] = Int 4
 
-let in8 = [Clause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
-           Clause (Ident "x3", Tau [(T (LRecord [(Slot 1, Lab "q", LStar)],[LRecord [(Slot 1, Lab "q", LInt)];LRecord [(Slot 1, Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
-          ];;
-let typedec8 = get_all_typedec in8;;
-let recordsoudness8 = record_soundness typedec8 in8;;
-find_tau typedec8 "x1";;
+should return 3
+global_env = {x1->1, x2->True, x3->Closure({a:x1; b:x2}, {x1->1;x2->True}); x4-> 4; x6-> 4; x4->x6}
+sound = false
+rou:[(x3, [(1,3)->5; (1,4)->6; (2,3)->7; (2,4)->8])]
+delta: [(x4, [5->1;6->1; 7->2; 8->2])]
+*)
+let in8 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1); ( T (LTrue, []), Ind 2)], Int 1);
+           Clause (Ident "x2", Tau [( T (LTrue, []), Ind 3);( T (LFalse, []), Ind 4)], True);
+           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 5);
+                                    ( T (LRecord [(Lab "a", LInt); (Lab "b", LFalse)], []), Ind 6);
+                                    ( T (LRecord [(Lab "a", LTrue); (Lab "b", LTrue)], []), Ind 7);
+                                    ( T (LRecord [(Lab "a", LTrue); (Lab "b", LFalse)], []), Ind 8);], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           Clause (Ident "x4", Tau [( T (LInt, []), Ind 9)], Match (Ident "x3",
+                                                                    [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 10)], Int 3)]);
+                                                                     (PRecord [(Lab "a", PTrue)], [Clause (Ident "x6", Tau [( T (LInt, []), Ind 11)], Int 4)])]))];;
+let (sound8, rou8, delta8) = typecheck in8;;
+
+
+(*
+x1:[(LInt-{LTrue}, Ind 1)] = 1
+x2:[(LTrue-{LFalse}, Ind 2)] = True
+x3 : [({a:Int; b: True}-{}, Ind 3)] = {a:x1; b:x2}
+x4 :[(LInt-{}, Ind 4)] = Match x3 with
+      | {PRecord [a:PInt]} -> x5:LInt = Int 3
+
+should return 3
+global_env = {x1->1, x2->True, x3->Closure({a:x1; b:x2}, {x1->1;x2->True}); x4-> 3; x5->3; x4->x5}
+sound = false
+rou:[(x3, [(1,2)->3])]
+delta: [(x4, [(3->1)])]
+*)
+let in9 = [Clause (Ident "x1", Tau [( T (LInt, [LTrue]), Ind 1)], Int 1);
+           Clause (Ident "x2", Tau [( T (LTrue, [LFalse]), Ind 2)], True);
+           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
+let (sound9, rou9, delta9) = typecheck in9;;
