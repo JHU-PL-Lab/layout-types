@@ -10,8 +10,9 @@ type body = Int of int | True | False | Closure of body * env | Function of iden
           | Var of ident | Appl of ident * ident | Proj of ident * label
           | Plus of ident * ident | Minus of ident * ident | LessThan of ident * ident | Equals of ident * ident
           | And of ident * ident | Or of ident * ident | Not of ident
-          | Match of ident * (pattern * expr) list
+          | Match of ident * (pattern * expr) list | TaggedClosure of body * tagged_env
 and env = (ident * body) list
+and tagged_env = (ident * (body * ind)) list
 and clause = Clause of ident * tau * body
 and expr = clause list
 and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
@@ -215,33 +216,33 @@ let rec atomic_typed (program:expr) =
 let rec is_subtype_t (t1:t) (t2:t) =
   let rec is_subtype_bt (bt1:bt) (bt2:bt) =
     (match (bt1, bt2) with
-    | (_ , LStar) -> true
-    | (LInt, LInt) -> true
-    | (LFalse, LFalse) -> true
-    | (LTrue, LTrue) -> true
-    | (LFun, LFun) -> true
-    | (LRecord l1, LRecord l2) ->
-      let rec iterate_record l1 e2 =
-        match (l1,e2) with
-        | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
-        | _ -> false
-      in (let rec check_record l1 l2 =
-            match l2 with
-            | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
-            | _ -> true in check_record l1 l2)
-    | _ -> false) in
+     | (_ , LStar) -> true
+     | (LInt, LInt) -> true
+     | (LFalse, LFalse) -> true
+     | (LTrue, LTrue) -> true
+     | (LFun, LFun) -> true
+     | (LRecord l1, LRecord l2) ->
+       let rec iterate_record l1 e2 =
+         match (l1,e2) with
+         | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
+         | _ -> false
+       in (let rec check_record l1 l2 =
+             match l2 with
+             | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
+             | _ -> true in check_record l1 l2)
+     | _ -> false) in
   (match (t1, t2) with
-  | (T (bt1, neg1), T (bt2, neg2)) ->
-    let rec iterate_neg neg1 bt2 =
-      match neg1 with
-      | bt1::tl -> if is_subtype_bt bt2 bt1 then true else iterate_neg tl bt2
-      | _ -> false
-    in
-    let rec check_neg neg1 neg2 =
-      match neg2 with
-      | bt2::tl -> if iterate_neg neg1 bt2 then check_neg neg1 tl else false
-      | _ -> true
-    in if is_subtype_bt bt1 bt2 then check_neg neg1 neg2 else false);;
+   | (T (bt1, neg1), T (bt2, neg2)) ->
+     let rec iterate_neg neg1 bt2 =
+       match neg1 with
+       | bt1::tl -> if is_subtype_bt bt2 bt1 then true else iterate_neg tl bt2
+       | _ -> false
+     in
+     let rec check_neg neg1 neg2 =
+       match neg2 with
+       | bt2::tl -> if iterate_neg neg1 bt2 then check_neg neg1 tl else false
+       | _ -> true
+     in if is_subtype_bt bt1 bt2 then check_neg neg1 neg2 else false);;
 
 (* whether t1 is subtype of t2, t1 and t2 are both tau type *)
 let rec is_subtype tau1 tau2 =
@@ -266,49 +267,49 @@ let rec sound_subtype typedec (df:env) =
 let rec record_soundness typedec (program:expr) =
   let get_canonical_record_wrapper r =
     (let rec get_canonical_record r =
-      match r with
-      | (Lab lab, T (bt, neg))::tl ->
-        let (r2, neg2) = get_canonical_record tl
-        in let rec flattern_neg neg =
-             match neg with
-             | btn::ttll -> (LRecord [(Lab lab, btn)])::(flattern_neg ttll)
-             | _ -> []
-        in (( Lab lab, bt)::r2,(flattern_neg neg)@neg2)
-      | _ -> ([],[])
-    in let (bt, neg) = get_canonical_record r
-    in T (LRecord bt, neg)) in
+       match r with
+       | (Lab lab, T (bt, neg))::tl ->
+         let (r2, neg2) = get_canonical_record tl
+         in let rec flattern_neg neg =
+              match neg with
+              | btn::ttll -> (LRecord [(Lab lab, btn)])::(flattern_neg ttll)
+              | _ -> []
+         in (( Lab lab, bt)::r2,(flattern_neg neg)@neg2)
+       | _ -> ([],[])
+     in let (bt, neg) = get_canonical_record r
+     in T (LRecord bt, neg)) in
   let get_field_product r typedec =
     (let rec iterate_res lab t ind res =
-      match res with
-      | (record_list, nounce_list)::tl -> ((lab, t)::record_list,ind::nounce_list)::(iterate_res lab t ind tl)
-      | _ -> []
-    in let rec iterate_disjuncts lab disjuncts res =
-         match disjuncts with
-         | (t, ind)::tl -> (iterate_res lab t ind res) @ (iterate_disjuncts lab tl res)
-         | _ -> []
-    in let rec iterate_record r typedec =
-         match r with
-         | (lab, Ident x)::tl -> let res = iterate_record tl typedec in iterate_disjuncts lab (find_tau typedec x) res
-         | _ -> [([],[])]
-    in iterate_record r typedec) in
+       match res with
+       | (record_list, nounce_list)::tl -> ((lab, t)::record_list,ind::nounce_list)::(iterate_res lab t ind tl)
+       | _ -> []
+     in let rec iterate_disjuncts lab disjuncts res =
+          match disjuncts with
+          | (t, ind)::tl -> (iterate_res lab t ind res) @ (iterate_disjuncts lab tl res)
+          | _ -> []
+     in let rec iterate_record r typedec =
+          match r with
+          | (lab, Ident x)::tl -> let res = iterate_record tl typedec in iterate_disjuncts lab (find_tau typedec x) res
+          | _ -> [([],[])]
+     in iterate_record r typedec) in
   let rec iterate_tau r1 tau =
     (match tau with
-    | (t1, Ind ind)::tl -> if is_subtype_t r1 t1 then ind else iterate_tau r1 tl
-    | _ -> -1) in
+     | (t1, Ind ind)::tl -> if is_subtype_t r1 t1 then ind else iterate_tau r1 tl
+     | _ -> -1) in
   (match program with
-  | (Clause (Ident x, Tau tau, Record r))::tl ->
-    let rec iterate_product product tau =
-      match product with
-      | (record, nounce_list)::tl ->let match_ind = iterate_tau (get_canonical_record_wrapper record) tau in
-        if (match_ind = -1) then (false,[])
-        else (let (matches, table) = iterate_product tl tau in
-              if matches = true then (true, (nounce_list, match_ind) :: table) else (false, []))
-      | _ ->(true, [])
-    in let (matches_tl, rou_tl) = record_soundness typedec tl
-    in let (matches_cur, table_cur) = iterate_product (get_field_product r typedec) tau
-    in if matches_tl && matches_cur then (true, (Ident x, table_cur)::rou_tl) else (false, [])
-  | hd::tl -> record_soundness typedec tl
-  | _ -> (true, []));;
+   | (Clause (Ident x, Tau tau, Record r))::tl ->
+     let rec iterate_product product tau =
+       match product with
+       | (record, nounce_list)::tl ->let match_ind = iterate_tau (get_canonical_record_wrapper record) tau in
+         if (match_ind = -1) then (false,[])
+         else (let (matches, table) = iterate_product tl tau in
+               if matches = true then (true, (nounce_list, match_ind) :: table) else (false, []))
+       | _ ->(true, [])
+     in let (matches_tl, rou_tl) = record_soundness typedec tl
+     in let (matches_cur, table_cur) = iterate_product (get_field_product r typedec) tau
+     in if matches_tl && matches_cur then (true, (Ident x, table_cur)::rou_tl) else (false, [])
+   | hd::tl -> record_soundness typedec tl
+   | _ -> (true, []));;
 
 (* Pattern Complete *)
 let rec tb_pattern_match bt pattern =
@@ -374,22 +375,62 @@ let rec t_pattern_match bt neg pattern =
 let rec pattern_complete typedec (program:expr) =
   let rec pattern_cover tau patterns =
     (match tau with
-    | (T (bt, neg), Ind i)::tl ->
-      let rec iterate_patterns patterns pat_ind=
-        match patterns with
-        | (p,e)::ttll -> if t_pattern_match bt neg p then pat_ind else iterate_patterns ttll (pat_ind+1)
-        | _ -> 0
-      in let cur_match = iterate_patterns patterns 1
-      in let (tail_match, delta) = pattern_cover tl patterns
-      in if (cur_match != 0) && tail_match then (true, (Ind i, cur_match)::delta) else (false, [])
-    | _ -> (true, [])) in
+     | (T (bt, neg), Ind i)::tl ->
+       let rec iterate_patterns patterns pat_ind=
+         match patterns with
+         | (p,e)::ttll -> if t_pattern_match bt neg p then pat_ind else iterate_patterns ttll (pat_ind+1)
+         | _ -> 0
+       in let cur_match = iterate_patterns patterns 1
+       in let (tail_match, delta) = pattern_cover tl patterns
+       in if (cur_match != 0) && tail_match then (true, (Ind i, cur_match)::delta) else (false, [])
+     | _ -> (true, [])) in
   (match program with
-    | (Clause (Ident x1, Tau tau, Match (Ident x2, patterns)))::tl ->
-      let (match_cur, table_cur) = pattern_cover (find_tau typedec x2) patterns
-      in let (match_tail, delta_tail) = pattern_complete typedec tl
-      in if match_cur && match_tail then (true, (Ident x1, table_cur) :: delta_tail) else (false, [])
-    | hd::tl -> pattern_complete typedec tl
-    | _ -> (true,[]));;
+   | (Clause (Ident x1, Tau tau, Match (Ident x2, patterns)))::tl ->
+     let (match_cur, table_cur) = pattern_cover (find_tau typedec x2) patterns
+     in let (match_tail, delta_tail) = pattern_complete typedec tl
+     in if match_cur && match_tail then (true, (Ident x1, table_cur) :: delta_tail) else (false, [])
+   | hd::tl -> pattern_complete typedec tl
+   | _ -> (true,[]));;
+
+let get_matching_nounce typedec x tb =
+  let rec iterate_tau tau tb =
+    match tau with
+    | (T (bt, []), Ind ind)::tl -> if bt=tb then ind::(iterate_tau tl tb) else iterate_tau tl tb
+    | hd::tl -> iterate_tau tl tb
+    | _ -> []
+  in iterate_tau (find_tau typedec x) tb;;
+
+let get_projection_nounce typedec x lab =
+  let rec exists_lab lr lab=
+    match lr with
+    | (Lab l1, bt)::tl -> if l1 = lab then true else exists_lab tl lab
+    | _ -> false
+  in let rec iterate_tau tau lab =
+       match tau with
+       | (T (LRecord lr, []), Ind ind)::tl -> if (exists_lab lr lab) then ind::(iterate_tau tl lab) else iterate_tau tl lab
+       | hd::tl -> iterate_tau tl lab
+       | _ -> []
+  in iterate_tau (find_tau typedec x) lab;;
+
+let rec get_runtime_success_dispatch_table (program:expr) typedec=
+  match program with
+  | Clause (Ident x, Tau tau, Plus (Ident x1, Ident x2))::tl -> (Ident x, [(get_matching_nounce typedec x1 LInt);(get_matching_nounce typedec x2 LInt)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Minus (Ident x1, Ident x2))::tl -> (Ident x, [(get_matching_nounce typedec x1 LInt);(get_matching_nounce typedec x2 LInt)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Not (Ident x1))::tl -> (Ident x, [(get_matching_nounce typedec x1 LTrue)@(get_matching_nounce typedec x1 LFalse)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, And (Ident x1, Ident x2))::tl -> (Ident x, [(get_matching_nounce typedec x1 LTrue)@(get_matching_nounce typedec x1 LFalse);(get_matching_nounce typedec x2 LTrue)@(get_matching_nounce typedec x2 LFalse)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Or (Ident x1, Ident x2))::tl -> (Ident x, [(get_matching_nounce typedec x1 LTrue)@(get_matching_nounce typedec x1 LFalse);(get_matching_nounce typedec x2 LTrue)@(get_matching_nounce typedec x2 LFalse)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Equals (Ident x1, Ident x2))::tl -> (Ident x, [(get_matching_nounce typedec x1 LInt);(get_matching_nounce typedec x2 LInt)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Appl (Ident x1, Ident x2))::tl -> (Ident x, [(get_matching_nounce typedec x1 LFun)])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Proj (Ident x1, Lab lab))::tl -> (Ident x, [get_projection_nounce typedec x1 lab])::(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Function (Ident x1, e))::tl -> (get_runtime_success_dispatch_table e typedec)@(get_runtime_success_dispatch_table tl typedec)
+  | Clause (Ident x, Tau tau, Match (Ident x1, pe))::tl ->
+    (let rec iterate_pattern_clause pe typedec=
+       (match pe with
+        | (p, e)::tl-> (get_runtime_success_dispatch_table e typedec)@(iterate_pattern_clause tl typedec)
+        | _ -> [])
+     in (iterate_pattern_clause pe typedec)@(get_runtime_success_dispatch_table tl typedec))
+  | hd::tl -> get_runtime_success_dispatch_table tl typedec
+  | _ -> [];;
 
 (* typechecking, return true/false, rou and delta *)
 let typecheck (program:expr) =
@@ -398,6 +439,141 @@ let typecheck (program:expr) =
   let (recordsound, rou) = (record_soundness typedec program) in
   let (patterncomplete, delta) = (pattern_complete typedec program) in
   ((atomic_typed program) && (sound_subtype typedec !global) && recordsound && patterncomplete,rou, delta);;
+
+
+(* Runtime tagged interpreter *)
+
+let rec find_tagged_var x envir =
+  match envir with
+  | (Ident x1, btag)::tl -> if x = x1 then btag else find_tagged_var x tl
+  | _ -> (Empty, Ind (-1));;
+
+let rec get_rou rou x =
+  match rou with
+  | (Ident xx, entry)::tl -> if x = xx then entry else get_rou tl x
+  | _ -> [];;
+
+let rec get_delta delta x =
+  match delta with
+  | (Ident xx, entry)::tl -> if x = xx then entry else get_delta tl x
+  | _ ->[];;
+
+let get_nounce_from_rou nlist rou =
+  let rec match_entry nlist entry =
+    match (nlist, entry) with
+    | ([],[]) -> true
+    | (ind1::tl1, (Ind ind2)::tl2) -> if ind1 = ind2 then match_entry tl1 tl2 else false
+    | _ -> false
+  in let rec iterate_rou nlist rou =
+    match rou with
+    | (entry, ind)::tl -> if match_entry nlist entry then Ind ind else iterate_rou nlist rou
+    | _ -> Ind (-1)
+  in iterate_rou nlist rou;;
+
+(* use runtime success table to check whether exists any runtime error*)
+let check_runtime_success rst x indices =
+  let rec find_entry rst x =
+    (match rst with
+     | (Ident xx, entry)::tl -> if x = xx then entry else find_entry tl x
+     | _ -> [])
+  in let rec check_index l ind =
+       (match l with
+        | hd::tl -> if hd = ind then true else check_index tl ind
+        | _ -> false)
+  in let rec check_success entry indices =
+       (match (entry, indices) with
+        | (l1::tl1, ind2::tl2) -> if check_index l1 ind2 then check_success tl1 tl2 else false
+        | _ -> true)
+  in check_success (find_entry rst x) indices;;
+
+let rec tagged_eval_body (b:body) tau ev flowto rou delta rst=
+    match b with
+      | Int n -> (match tau with
+          | [(T (LInt, []), Ind ind)]-> (Int n, Ind ind)
+          | _ -> (Empty, Ind (-1)))
+      | True -> (match tau with
+          | [(T (LTrue, []), Ind ind)] -> (True, Ind ind)
+          | _ -> (Empty, Ind (-1)))
+      | False -> (match tau with
+          | [(T (LFalse, []), Ind ind)] -> (False, Ind ind)
+          | _ -> (Empty, Ind (-1)))
+      | Var (Ident x) -> find_tagged_var x ev
+      | Function (x1, e1) -> (match tau with
+          | [(T (LFun, []), Ind ind)]-> (TaggedClosure (b, ev), Ind ind)
+          | _ -> (Empty, Ind (-1)))
+      | Record rc ->
+        let rec get_record_field_nounce rc =
+          match rc with
+          | (lab, Ident x) :: tl ->
+            (match find_tagged_var x ev with
+             | (_ , Ind ind) -> ind)::get_record_field_nounce tl
+          | _ -> []
+        in (TaggedClosure (b, ev), get_nounce_from_rou (get_record_field_nounce rc) (get_rou rou flowto))
+      | Plus (Ident x1, Ident x2) ->
+       (match (find_tagged_var x1 ev, find_tagged_var x2 ev) with
+       | ((Int i1, Ind ind1), (Int i2, Ind ind2)) -> (match tau with
+           | [(T (LInt, []), Ind ind)]-> if (check_runtime_success rst flowto [ind1; ind2]) then (Int (i1+i2), Ind ind) else (Empty, Ind (-1))
+           | _ -> (Empty, Ind (-1)))
+       | _ -> (Empty, Ind (-1)))
+    | Minus (Ident x1, Ident x2) ->
+      (match (find_tagged_var x1 ev, find_tagged_var x2 ev) with
+       | ((Int i1, Ind ind1), (Int i2, Ind ind2)) -> (match tau with
+           | [(T (LInt, []), Ind ind)]-> if (check_runtime_success rst flowto [ind1; ind2]) then (Int (i1-i2), Ind ind) else (Empty, Ind (-1))
+           | _ -> (Empty, Ind (-1)))
+       | _ -> (Empty, Ind (-1)))
+    | Not (Ident x1) ->
+      (match (find_tagged_var x1 ev, tau) with
+       | ((True, Ind ind1), [(T (LFalse, []), Ind ind)]) -> if (check_runtime_success rst flowto [ind1]) then (False, Ind ind) else (Empty, Ind (-1))
+       | ((False, Ind ind1), [(T (LTrue, []), Ind ind)]) -> if (check_runtime_success rst flowto [ind1]) then (True, Ind ind) else (Empty, Ind (-1))
+       | _ -> (Empty, Ind (-1)))
+    | And (Ident x1, Ident x2) ->
+      (match (find_tagged_var x1 ev, find_tagged_var x2 ev, tau) with
+       | ((True, Ind ind1), (False, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (False, Ind ind4) else (Empty, Ind (-1))
+       | ((True, Ind ind1), (True, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (True, Ind ind3) else (Empty, Ind (-1))
+       | ((False, Ind ind1), (True, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (False, Ind ind4) else (Empty, Ind (-1))
+       | ((False, Ind ind1), (False, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (False, Ind ind4) else (Empty, Ind (-1))
+       | _ -> (Empty, Ind (-1)))
+    | Or (Ident x1, Ident x2) ->
+      (match (find_tagged_var x1 ev, find_tagged_var x2 ev, tau) with
+       | ((True, Ind ind1), (False, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (True, Ind ind3) else (Empty, Ind (-1))
+       | ((True, Ind ind1), (True, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (True, Ind ind3) else (Empty, Ind (-1))
+       | ((False, Ind ind1), (True, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (True, Ind ind3) else (Empty, Ind (-1))
+       | ((False, Ind ind1), (False, Ind ind2), [(T (LTrue, []), Ind ind3);(T (LFalse, []), Ind ind4)]) -> if (check_runtime_success rst flowto [ind1;ind2]) then (False, Ind ind4) else (Empty, Ind (-1))
+       | _ -> (Empty, Ind (-1)))
+    | Equals (Ident x1, Ident x2) ->
+      (match (find_tagged_var x1 ev, find_tagged_var x2 ev) with
+       | ((Int i1, Ind ind1), (Int i2, Ind ind2)) -> if i1 = i2 && (check_runtime_success rst flowto [ind1;ind2]) then (match tau with
+                                                                     | [(T (LTrue, []), Ind ind)] -> (True, Ind ind)
+                                                                     | _ -> (Empty, Ind (-1)))
+                                                                else (match tau with
+                                                                     | [(T (LFalse, []), Ind ind)] -> (False, Ind ind)
+                                                                     | _ -> (Empty, Ind (-1)))
+       | _ -> (Empty, Ind (-1)))
+    | Appl (Ident x1, Ident x2) ->
+      (match (find_tagged_var x1 ev, find_tagged_var x2 ev) with
+       | ((TaggedClosure (Function (xx, ee), eevv), Ind ind1), v) -> if (check_runtime_success rst flowto [ind1]) then (tagged_eval_clauses ee ((xx, v)::eevv) rou delta rst) else (Empty, Ind (-1))
+       | _ -> (Empty, Ind (-1)))
+    | Proj (Ident x1, Lab l1) ->
+      (match (find_tagged_var x1 ev) with
+       | (TaggedClosure (Record r, eevv), Ind ind1)->if (check_runtime_success rst flowto [ind1]) then find_tagged_var (get_record_val r l1) eevv else (Empty, Ind (-1))
+       | _ -> (Empty, Ind (-1)))
+    | Match (Ident x1, p) ->
+      let rec find_clause_num delta nounce =
+        match delta with
+        | (n1, clause_num)::tl -> if nounce = n1 then clause_num else find_clause_num tl nounce
+        | _ -> -1
+      in let rec get_clause p num =
+           match p with
+           | (p1, e1)::tl -> if num = 1 then e1 else get_clause tl (num-1)
+           | _ -> []
+      in let (v, nounce) = find_tagged_var x1 ev
+      in tagged_eval_clauses (get_clause p (find_clause_num (get_delta delta flowto) nounce)) ev rou delta rst
+    | _ -> raise BodyNotMatched
+and tagged_eval_clauses (clauses:expr) (ev:tagged_env) rou delta rst =
+  match clauses with
+  | Clause (Ident x, Tau tau, b)::[] ->  tagged_eval_body b tau ev x rou delta rst
+  | Clause (Ident x,Tau tau, b)::tl -> let res = tagged_eval_body b tau ev x rou delta rst in tagged_eval_clauses tl ((Ident x, res)::ev) rou delta rst
+  | _ -> raise ClauseNotMatched;;
 
 (*
 x1:Int = 1
@@ -414,6 +590,7 @@ let in1 = [Clause (Ident "x1",Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x2",Tau [( T (LInt, []), Ind 2)], Int 2);
            Clause (Ident "x3",Tau [( T (LInt, []), Ind 3)], Plus (Ident "x1", Ident "x2"))];;
 let (sound1, rou1, delta1) = typecheck in1;;
+let res1 = tagged_eval_clauses in1 [] rou1 delta1 (get_runtime_success_dispatch_table in1 (get_all_typedec in1));;
 
 (*
 x1:True = True
@@ -430,6 +607,7 @@ let in2 = [Clause (Ident "x1",Tau [( T (LTrue, []), Ind 1)], True);
            Clause (Ident "x2",Tau [( T (LFalse, []), Ind 2)], False);
            Clause (Ident "x3",Tau [( T (LTrue, []), Ind 3); ( T (LFalse, []), Ind 4)], And (Ident "x1", Ident "x2"))];;
 let (sound2, rou2, delta2) = typecheck in2;;
+let res2 = tagged_eval_clauses in2 [] rou2 delta2 (get_runtime_success_dispatch_table in2 (get_all_typedec in2));;
 
 (*
 x1:Int = 1
@@ -444,6 +622,7 @@ delta = []
 let in3 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x2", Tau [( T (LInt, []), Ind 2)], Var(Ident "x1"))];;
 let (sound3, rou3, delta3) = typecheck in3;;
+let res3 = tagged_eval_clauses in3 [] rou3 delta3 (get_runtime_success_dispatch_table in3 (get_all_typedec in3));;
 
 (*
 x1:[(LInt-{}, Ind 1)] = 1
@@ -463,7 +642,7 @@ let in4 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
            Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
            Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
 let (sound4, rou4, delta4) = typecheck in4;;
-
+let res4 = tagged_eval_clauses in4 [] rou4 delta4 (get_runtime_success_dispatch_table in4 (get_all_typedec in4));;
 
 (*
 x1:LInt = 1
@@ -564,3 +743,20 @@ let in9 = [Clause (Ident "x1", Tau [( T (LInt, [LTrue]), Ind 1)], Int 1);
            Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
            Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
 let (sound9, rou9, delta9) = typecheck in9;;
+
+(*
+x1 :LFun = Fun x2 -> {x3 = x2 + 1}
+x4 = 1
+x5 = x1 x4 *)
+
+(*
+x1:Int = 1;
+x2:True = true
+x3:Record = {a:x1; b:x2}
+x4:Int = x3.a *)
+
+let in10 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
+            Clause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
+            Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+            Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Proj (Ident "x3", Lab "a"))];;
+let table10 = get_runtime_success_dispatch_table in10 (get_all_typedec in10);;
