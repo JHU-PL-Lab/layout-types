@@ -185,6 +185,7 @@ let rec conflict bt1 bt2 =
     | (LRecord r1, _ ) -> true
    );;
 
+(* canonicalize *)
 let canonicalize_t t =
   let is_empty_t bt neg =
     (match (bt, neg) with
@@ -215,9 +216,15 @@ let canonicalize_tau tau =
       | T (LEmpty, []) -> iterate_tau tl
       | t -> (t, ind)::(iterate_tau tl))
     | _ -> []
-in iterate_tau tau;;
+(* in iterate_tau tau;;  *)
+  in let rec remove_duplicate_star tau has_star=
+       match tau with
+       | (T (LStar, []), ind)::tl -> if has_star then (remove_duplicate_star tl true) else (T (LStar, []), ind)::(remove_duplicate_star tl true)
+       | hd::tl -> hd::(remove_duplicate_star tl has_star)
+       | _ -> []
+  in remove_duplicate_star (iterate_tau tau) false;;
 
-(* canonicalize *)
+(* intersect *)
 let rec intersect_bt (bt1:bt) (bt2:bt) =
   match (bt1, bt2) with
   | (LStar, bt) -> bt
@@ -258,6 +265,7 @@ let intersect_t t1 t2 =
   match (t1, t2) with
   | (T (bt1, neg1), T(bt2, neg2)) -> T (intersect_bt bt1 bt2, neg1@neg2);;
 
+(* Transform match matterns to union of tags *)
 let pToTau pa =
   let rec pToBt p =
     (match p with
@@ -283,6 +291,8 @@ let pToTau pa =
         | _ -> [])
   in iterate_pattern pa pa 1;;
 
+let nounce_flow = ref [];;
+
 let extract_fields r t =
   let rec find_field_t lr lab is_neg =
     match lr with
@@ -299,7 +309,7 @@ let extract_fields r t =
         | _ -> [])
   in let rec iterate_t l tau =
     (match tau with
-      | (T (bt, neg), ind )::tl -> (T (proj_field bt l false, iterate_neg_t neg l), Ind (get_fresh_nounce 0))::(iterate_t l tl)
+      | (T (bt, neg), Ind ind )::tl -> let nounce = get_fresh_nounce 0 in ( nounce_flow := (Ind nounce, Ind ind)::(!nounce_flow);(T (proj_field bt l false, iterate_neg_t neg l), Ind nounce)::(iterate_t l tl))
       | _ -> [])
   in let rec iterate_r r tau=
     (match r with
@@ -307,7 +317,7 @@ let extract_fields r t =
       | _ -> [])
   in iterate_r r t;;
 
-let res = extract_fields [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")] [(T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], [LRecord [(Lab "a", LFalse)]]), Ind 1)];;
+(* let res = extract_fields [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")] [(T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], [LRecord [(Lab "a", LFalse)]]), Ind 1)];; *)
 
 (* propagate x with type t using dataflow df *)
 let rec backward_propagate all_df x t =
@@ -340,6 +350,22 @@ let forward_propagate_wrapper all_df tags =
     match tags with
     | (Ident x1, t1)::tl -> if (x=x1) && (equals_t t t1) then true else exists_tag tl x t
     | _ -> false
+  in let exists_nounce_flow t1 t2 =
+       (let rec found_nounce_flow ind1 ind2 nounce_flow =
+          match nounce_flow with
+          | (Ind n1, Ind n2)::tl -> if ind1 = n1 && ind2 = n2 then true else found_nounce_flow ind1 ind2 tl
+          | _ -> false
+        in let rec iterate_record_tag ind1 t2 =
+          match t2 with
+          | (tb2, Ind ind2)::tl -> if found_nounce_flow ind1 ind2 (!nounce_flow) then true else iterate_record_tag ind1 tl
+          | _ -> false
+        in match t1 with
+        | (tb1, Ind ind1)::tl -> iterate_record_tag ind1 t2
+        | _ -> false)
+  in let rec exists_tag_record field_tag x tags =
+       match tags with
+       | (Ident x1, t1)::tl -> if (x=x1) && (exists_nounce_flow field_tag t1) then true else exists_tag_record field_tag x tl
+       | _ -> false
   in let rec forward_propagate x t df =
      match df with
      | (Ident x1, Var (Ident x2))::tl -> if x2 = x && not (exists_tag tags x1 t) then (forward_propagate x1 t all_df)@(forward_propagate x t tl) else forward_propagate x t tl
@@ -355,7 +381,7 @@ let forward_propagate_wrapper all_df tags =
          | _ -> []
        in let rec iterate_record_field r =
          (match r with
-           | (Lab lab, Ident x2)::tl -> if x = x2 then forward_propagate x1 (construct_record lab t) all_df else iterate_record_field tl
+           | (Lab lab, Ident x2)::tl -> if x = x2 && not (exists_tag_record t x1 tags) then forward_propagate x1 (construct_record lab t) all_df else iterate_record_field tl
            | _ -> [])
        in (iterate_record_field r)@(forward_propagate x t tl)
      | hd::tl -> forward_propagate x t tl
@@ -420,8 +446,7 @@ let rec reform_tag tags (program:expr) =
        | _ -> []
   in iterate_all_vars (get_all_vars program);;
 
-(* Find all match or only those in the dataflow (no information )? *)
-let rec type_inference df (program: expr) = fresh_nounce := 0;
+let rec type_inference df (program: expr) = fresh_nounce := 0; nounce_flow := [];
   match df with
   | (Ident x, Var (Ident x2))::tl ->
     (match (find_match x program) with
@@ -431,7 +456,18 @@ let rec type_inference df (program: expr) = fresh_nounce := 0;
   | (Ident x, _) ::tl -> type_inference tl program
   | _ -> [];;
 
-let in8 = [ Clause (Ident "x0", Int 1);
+  (*
+  x1 = 1;
+  x2 = 2;
+  x3 = {a:x1, b:x2}
+  x4 = 3
+  x5 = {c:x3, d: x4}
+  x6 = Match x5 with
+    | {c:{a:PInt, b:PTrue}} -> x7=7
+    | PStar -> x8 = 8
+  *)
+
+let in1 = [ Clause (Ident "x0", Int 1);
             Clause (Ident "x1", Var (Ident "x0"));
            Clause (Ident "x2", Int 2);
            Clause (Ident "x3", Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
@@ -439,24 +475,17 @@ let in8 = [ Clause (Ident "x0", Int 1);
            Clause (Ident "x5", Record [(Lab "c", Ident "x3"); (Lab "d", Ident "x4")]);
            Clause (Ident "x6", Match (Ident "x5", [(PRecord [(Lab "c", PRecord [(Lab "a", PInt); (Lab "b", PTrue)])], [Clause (Ident "x7", Int 7)]);
                                                    (PStar, [Clause (Ident "x8", Int 8)])]))];;
-let out8 = eval in8;;
-let test = pToTau [(PRecord [(Lab "c", PRecord [(Lab "a", PInt); (Lab "b", PTrue)])], [Clause (Ident "x7", Int 7)]);
-                   (PStar, [Clause (Ident "x8", Int 8)])];;
-let test2 = canonicalize_tau [(T (LStar,
-                                  [LRecord [(Lab "c", LRecord [(Lab "a", LInt); (Lab "b", LTrue)])]]),
-                               Ind 11)];;
-let res = type_inference (!global_env) in8;;
-let res2 = forward_propagate_wrapper (!global_env) res;;
-let final_res = reform_tag res2 in8;;
-!global_env;;
-res;;
+let out1 = eval in1;;
+let back = type_inference (!global_env) in1;;
+let forward = forward_propagate_wrapper (!global_env) back;;
+let final_res = reform_tag back in1;;
 
 let rec getident x tags =
   match tags with
   | (Ident x1, t)::tl -> if x = x1 then (Ident x, t)::getident x tl else getident x tl
   | _ -> [];;
 
-getident "x3" res2;;
+(* getident "x3" forward;;
 
 reform_tag [(Ident "x3",
   [(T (LRecord [(Lab "a", LInt)], []), Ind 10);
@@ -469,4 +498,29 @@ reform_tag [(Ident "x3",
    (T (LRecord [(Lab "b", LStar)], [LRecord [(Lab "b", LTrue)]]), Ind 7)]);
  (Ident "x3",
   [(T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 6);
-   (T (LStar, [LRecord [(Lab "a", LInt); (Lab "b", LTrue)]]), Ind 5)])] in8;;
+   (T (LStar, [LRecord [(Lab "a", LInt); (Lab "b", LTrue)]]), Ind 5)])] in1;; *)
+
+
+(*
+x1 = 1
+x2 = true
+x3 = {a:x1; b:x2}
+x4 = match x3 with
+      | {a:Int} -> x5 = 2
+      | * -> x6 =3
+x7 = match x3 with
+      | {b:true} -> x8 = 4
+      | * - > x9 = 5
+x10 = x3
+ *)
+let in2 = [Clause (Ident "x1", Int 1);
+           Clause (Ident "x2", True);
+           Clause (Ident "x3", Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           Clause (Ident "x4", Match (Ident "x3", [(PRecord [(Lab "a", PInt)],[Clause (Ident "x5", Int 2)]);(PStar,[Clause (Ident "x6", Int 3)])]));
+           Clause (Ident "x7", Match (Ident "x3", [(PRecord [(Lab "b", PTrue)],[Clause (Ident "x8", Int 4)]);(PStar,[Clause (Ident "x9", Int 5)])]));
+           Clause (Ident "x10", Var (Ident "x3"))];;
+let out2 = eval in2;;
+let back2 = type_inference (!global_env) in2;;
+let forward2 = forward_propagate_wrapper (!global_env) back2;;
+let final_res2 = reform_tag back2 in2;;
+!global_env;;
