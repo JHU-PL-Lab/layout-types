@@ -109,8 +109,6 @@ and eval_clauses (clauses:expr) (ev:env)=
   | Clause (Ident x, b)::tl -> let res = eval_body b ev (Ident x) in (global_env := (Ident x, res) :: !global_env; eval_clauses tl ((Ident x, res)::ev))
   | _ -> raise ClauseNotMatched;;
 
-(* let res = eval_clauses tl ((Ident x, eval_body b ev (Ident x))::ev) in (global_env := (Ident x, res) :: !global_env; res) *)
-
 let eval clauses = global_env:= []; (eval_clauses clauses [], global_env);;
 
 (*
