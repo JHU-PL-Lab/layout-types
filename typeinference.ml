@@ -1,10 +1,10 @@
 type ident = Ident of string;;
 type label = Lab of string;;
 
-type ind = Ind of int;;
+type nonce = Nonce of int;;
 type bt = LRecord of (label * bt) list | LInt | LTrue | LFalse | LFun | LStar | LEmpty;;
 type t =  T of bt * (bt list);;
-type tau = Tau of (t * ind) list;;
+type tau = Tau of (t * nonce) list;;
 
 type body = Int of int | True | False | Closure of body * env | Function of ident * expr | Record of (label * ident) list | OrVal of body list | Empty
           | Var of ident | Appl of ident * ident | Proj of ident * label
@@ -12,7 +12,7 @@ type body = Int of int | True | False | Closure of body * env | Function of iden
           | And of ident * ident | Or of ident * ident | Not of ident
           | Match of ident * (pattern * expr) list
 and env = (ident * body) list
-and tagged_env = (ident * (body * ind)) list
+and tagged_env = (ident * (body * nonce)) list
 and clause = Clause of ident * body
 and expr = clause list
 and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
@@ -145,10 +145,11 @@ let eval clauses = global_env:= [];(eval_clauses clauses [], global_env);;
 
 
 (* Type inference *)
-let fresh_nounce = ref 0;;
+(* Gives a fresh nonce every time when called, e can be anything *)
+let fresh_nonce = ref 0;;
+let get_fresh_nonce e = fresh_nonce := !fresh_nonce+1; let nonce = !fresh_nonce in nonce;;
 
-let get_fresh_nounce e = fresh_nounce := !fresh_nounce+1; let nounce = !fresh_nounce in nounce;;
-
+(* tells whether bt1 is subtype of bt2, they are both of bt type *)
 let rec is_subtype_bt (bt1:bt) (bt2:bt) =
   match (bt1, bt2) with
   | (_ , LStar) -> true
@@ -167,102 +168,112 @@ let rec is_subtype_bt (bt1:bt) (bt2:bt) =
           | _ -> true in check_record l1 l2)
   | _ -> false;;
 
-let rec conflict bt1 bt2 =
-   (match (bt1,bt2) with
-    | (LEmpty, _ ) -> true
-    | (_, LEmpty ) -> true
-    | (LStar, _ ) -> false
-    | (_, LStar) -> false
-    | (LInt, LInt) -> false
-    | (LInt, _ )->true
-    | (LTrue, LTrue) -> false
-    | (LTrue, _ ) -> true
-    | (LFalse, LFalse) -> false
-    | (LFalse, _ ) -> true
-    | (LFun, LFun) -> false
-    | (LFun, _ ) -> true
-    | (LRecord r1, LRecord r2) -> false
-    | (LRecord r1, _ ) -> true
-   );;
-
 (* canonicalize *)
-let canonicalize_t t =
-  let is_empty_t bt neg =
-    (match (bt, neg) with
-     | (LEmpty, _ ) -> true
-     | _ -> false)
-  in let rec tb_is_subtype_neg bt neg =
-       match neg with
-       | neg1::tl -> if is_subtype_bt bt neg1 then true else tb_is_subtype_neg bt tl
-       | _ -> false
-  in let rec reform_neg neg bt all_neg num =
-       match neg with
-       | LEmpty::tl -> reform_neg tl bt all_neg (num+1)
-       | neg1::tl ->
-         let rec is_subtype_any_neg neg num1 =
-            (match neg with
-              | neg2::ttll -> if ((num != num1)&&(is_subtype_bt neg1 neg2)) then true else is_subtype_any_neg ttll (num1+1)
-              | _ -> false)
-         in if (conflict neg1 bt) || (is_subtype_any_neg all_neg 1) then reform_neg tl bt all_neg (num+1) else neg1::(reform_neg tl bt all_neg (num+1))
-       | _ -> []
-  in match t with
-  | T (bt, neg) -> if ((tb_is_subtype_neg bt neg) || (is_empty_t bt neg)) then T (LEmpty, []) else T (bt, reform_neg neg bt neg 1);;
-
 let canonicalize_tau tau =
-  let rec iterate_tau tau =
+  (* Check if bt1 has conflict with bt2, see Deinifition 1.6 Rule 6 for specification *)
+  let rec conflict (bt1:bt) (bt2:bt) =
+    (match (bt1,bt2) with
+     | (LEmpty, _ ) -> true
+     | (_, LEmpty ) -> true
+     | (LStar, _ ) -> false
+     | (_, LStar) -> false
+     | (LInt, LInt) -> false
+     | (LInt, _ )->true
+     | (LTrue, LTrue) -> false
+     | (LTrue, _ ) -> true
+     | (LFalse, LFalse) -> false
+     | (LFalse, _ ) -> true
+     | (LFun, LFun) -> false
+     | (LFun, _ ) -> true
+     | (LRecord r1, LRecord r2) ->
+       (let rec find_lab_in_r1 r1 l =
+          match r1 with
+          | (Lab lab1, t1)::tl -> if lab1 = l then t1 else find_lab_in_r1 tl l
+          | _ -> LStar
+        in let rec iterate_r2 r2 =
+             match r2 with
+             | (Lab lab2, t2)::tl -> if (conflict t2 (find_lab_in_r1 r1 lab2)) then true else iterate_r2 tl
+             | _ -> false
+        in iterate_r2 r2)
+     | (LRecord r1, _ ) -> true)
+
+  in let canonicalize_t (t:t) =
+    (let is_empty_t bt neg =
+        (match (bt, neg) with
+         | (LEmpty, _ ) -> true
+         | _ -> false)
+      in let rec tb_is_subtype_neg bt neg =
+           match neg with
+           | neg1::tl -> if is_subtype_bt bt neg1 then true else tb_is_subtype_neg bt tl
+           | _ -> false
+      in let rec reform_neg neg bt all_neg num =
+           match neg with
+           | LEmpty::tl -> reform_neg tl bt all_neg (num+1)
+           | neg1::tl ->
+             let rec is_subtype_any_neg neg num1 =
+                (match neg with
+                  | neg2::ttll -> if ((num1 < num)&&(is_subtype_bt neg1 neg2)) then true else is_subtype_any_neg ttll (num1+1)
+                  | _ -> false)
+             in if (conflict neg1 bt) || (is_subtype_any_neg all_neg 1) then reform_neg tl bt all_neg (num+1) else neg1::(reform_neg tl bt all_neg (num+1))
+           | _ -> []
+      in match t with
+      | T (bt, neg) -> if ((tb_is_subtype_neg bt neg) || (is_empty_t bt neg)) then T (LEmpty, []) else T (bt, reform_neg neg bt neg 1))
+
+  in let rec iterate_tau tau =
     match tau with
-    | (t, ind)::tl ->
-      (match canonicalize_t t with
-      | T (LEmpty, []) -> iterate_tau tl
-      | t -> (t, ind)::(iterate_tau tl))
-    | _ -> []
-(* in iterate_tau tau;;  *)
+      | (t, nc)::tl -> (canonicalize_t t, nc)::(iterate_tau tl)
+      | _ -> []
+  in let rec remove_empty_tags tags =
+       match tags with
+       | (T (LEmpty, []), nc)::tl -> remove_empty_tags tl
+       | hd::tl -> hd::(remove_empty_tags tl)
+       | _ -> []
   in let rec remove_duplicate_star tau has_star=
        match tau with
-       | (T (LStar, []), ind)::tl -> if has_star then (remove_duplicate_star tl true) else (T (LStar, []), ind)::(remove_duplicate_star tl true)
+       | (T (LStar, []), nc)::tl -> if has_star then (remove_duplicate_star tl true) else (T (LStar, []), nc)::(remove_duplicate_star tl true)
        | hd::tl -> hd::(remove_duplicate_star tl has_star)
        | _ -> []
-  in remove_duplicate_star (iterate_tau tau) false;;
+  in remove_duplicate_star (remove_empty_tags (iterate_tau tau)) false;;
 
-(* intersect *)
-let rec intersect_bt (bt1:bt) (bt2:bt) =
-  match (bt1, bt2) with
-  | (LStar, bt) -> bt
-  | (bt, LStar) -> bt
-  | (LInt, LInt) -> LInt
-  | (LTrue, LTrue) -> LTrue
-  | (LFalse, LFalse) -> LFalse
-  | (LFun, LFun) -> LFun
-  | (LRecord lr1, LRecord lr2) ->
-    (let intersect_common lr1 lr2 =
-       ( let rec find_field r lab =
-           match r with
-           | (Lab l2, bt)::tl -> if lab = l2 then bt else find_field tl lab
-           | _ -> LEmpty
-         in let rec iterate_r1 lr1 lr2 =
-          match lr1 with
-            | (Lab lab, bt1)::tl ->
-              (match find_field lr2 lab with
-               | LEmpty -> iterate_r1 tl lr2
-               | bt2 -> (Lab lab, intersect_bt bt1 bt2)::(iterate_r1 tl lr2))
-            | _ -> []
-        in iterate_r1 lr1 lr2)
-      (* get the fields only in lr1 but not in lr2 *)
-     in let get_exclusive lr1 lr2 =
-          let rec find_field r lab1=
-            match r with
-            | (Lab lab2, _ )::tl -> if lab1 = lab2 then true else find_field tl lab1
-            | _ -> false
-          in let rec iterate_record r lr2 =
-            (match r with
-              | (Lab lab, bt)::tl -> (if (find_field lr2 lab) then (iterate_record tl lr2) else (Lab lab, bt)::(iterate_record tl lr2))
-              | _ -> [])
-          in iterate_record lr1 lr2
-    in LRecord ((intersect_common lr1 lr2)@ (get_exclusive lr1 lr2)@(get_exclusive lr2 lr1)))
-  | _ -> LEmpty;;
-
+(* Intersection of two tags, see Definition 1.8 for specification *)
 let intersect_t t1 t2 =
-  match (t1, t2) with
+  let rec intersect_bt (bt1:bt) (bt2:bt) =
+    (match (bt1, bt2) with
+    | (LStar, bt) -> bt
+    | (bt, LStar) -> bt
+    | (LInt, LInt) -> LInt
+    | (LTrue, LTrue) -> LTrue
+    | (LFalse, LFalse) -> LFalse
+    | (LFun, LFun) -> LFun
+    | (LRecord lr1, LRecord lr2) ->
+      (* intersect the common fields in record 1 and 2 *)
+      (let intersect_common lr1 lr2 =
+         ( let rec find_field r lab =
+             match r with
+             | (Lab l2, bt)::tl -> if lab = l2 then bt else find_field tl lab
+             | _ -> LEmpty
+           in let rec iterate_r1 lr1 lr2 =
+            match lr1 with
+              | (Lab lab, bt1)::tl ->
+                (match find_field lr2 lab with
+                 | LEmpty -> iterate_r1 tl lr2
+                 | bt2 -> (Lab lab, intersect_bt bt1 bt2)::(iterate_r1 tl lr2))
+              | _ -> []
+          in iterate_r1 lr1 lr2)
+        (* get the fields only in lr1 but not in lr2 *)
+       in let get_exclusive lr1 lr2 =
+            let rec find_field r lab1=
+              match r with
+              | (Lab lab2, _ )::tl -> if lab1 = lab2 then true else find_field tl lab1
+              | _ -> false
+            in let rec iterate_record r lr2 =
+              (match r with
+                | (Lab lab, bt)::tl -> (if (find_field lr2 lab) then (iterate_record tl lr2) else (Lab lab, bt)::(iterate_record tl lr2))
+                | _ -> [])
+            in iterate_record lr1 lr2
+      in LRecord ((intersect_common lr1 lr2)@ (get_exclusive lr1 lr2)@(get_exclusive lr2 lr1)))
+    | _ -> LEmpty)
+  in match (t1, t2) with
   | (T (bt1, neg1), T(bt2, neg2)) -> T (intersect_bt bt1 bt2, neg1@neg2);;
 
 (* Transform match matterns to union of tags *)
@@ -287,14 +298,19 @@ let pToTau pa =
           | _ -> raise TypeInferenceException)
   in let rec iterate_pattern pa all_pa num =
        (match pa with
-        | (p, e)::tl -> (T (pToBt p, get_neg all_pa num), Ind (get_fresh_nounce 0))::(iterate_pattern tl all_pa (num+1))
+        | (p, e)::tl -> (T (pToBt p, get_neg all_pa num), Nonce (get_fresh_nonce 0))::(iterate_pattern tl all_pa (num+1))
         | _ -> [])
   in iterate_pattern pa pa 1;;
 
-(* The record nounces that has already been projected *)
-let projected_record_nounces = ref [];;
+(* The record nonces that has already been projected.
+   It is used to indicate whether we should continue to project a tag in backward propagation *)
+let projected_record_nonces = ref [];;
 
-let extract_fields r t =
+(* Extract the tag for each field for record r with tag t, see Definition 3.1 for specification
+   Returns: [(x1, tag1); (x2, tag2)...], where x1, x2, ... are the fields *)
+let extract_fields r tau =
+  (* If the field does not exist in the positive part of T, then we return LStar.
+     If the field does not exist in the negative part of T, we return LEmpty *)
   let rec find_field_t lr lab is_neg =
     match lr with
     | (Lab l, bt)::tl -> if l = lab then bt else find_field_t tl lab is_neg
@@ -308,47 +324,65 @@ let extract_fields r t =
        (match neg with
         | bt::tl -> (proj_field bt l true)::(iterate_neg_t tl l)
         | _ -> [])
-  in let rec iterate_t l tau =
+  in let rec iterate_tau l tau =
     (match tau with
-      | (T (bt, neg), Ind ind )::tl -> projected_record_nounces := ind :: (!projected_record_nounces);
-                                      (T (proj_field bt l false, iterate_neg_t neg l), Ind (get_fresh_nounce 0))::(iterate_t l tl)
+      | (T (bt, neg), Nonce nonce )::tl -> projected_record_nonces := nonce :: (!projected_record_nonces);
+                                      (T (proj_field bt l false, iterate_neg_t neg l), Nonce (get_fresh_nonce 0))::(iterate_tau l tl)
       | _ -> [])
-  in let rec iterate_r r tau=
+  in let rec iterate_record r tau =
     (match r with
-      | (Lab l, Ident x1)::tl -> (x1, canonicalize_tau (iterate_t l tau))::(iterate_r tl tau)
+      | (Lab l, Ident x1)::tl -> (x1, canonicalize_tau (iterate_tau l tau))::(iterate_record tl tau)
       | _ -> [])
-  in iterate_r r t;;
+  in iterate_record r tau;;
 
-let rec exists_tag tags x t =
-  match tags with
-  | (Ident x1, t1)::tl ->
-    let equals_t t1 t2 =
-      (let rec iterate_tau ind1 t2 =
-         match t2 with
-         | (tb2, Ind ind2)::tl -> if ind1 = ind2 then true else iterate_tau ind1 tl
+(* Check whether a tag tau for x has already existed in the all_tags
+   NOTICE: I'm lazy checking the equality of 2 taus -- since they are
+   propagated using dataflow, if 2 taus are the same, then if any Nonce nc1
+   matches any nonce nc2 in tau2, then the 2 taus should be the same *)
+let rec exists_tag all_tags x tau =
+  match all_tags with
+  | (Ident x1, tau1)::tl ->
+    let equals_t tau1 tau2 =
+      (let rec iterate_tau nc1 tau2 =
+         match tau2 with
+         | (tb2, Nonce nc2)::tl -> if nc1 = nc2 then true else iterate_tau nc1 tl
          | _ -> false
-       in match t1 with
-       | (tb1, Ind ind1)::tl -> iterate_tau ind1 t2
+       in match tau1 with
+       | (tb1, Nonce nc1)::tl -> iterate_tau nc1 tau2
        | _ -> false)
-    in if (x=x1) && (equals_t t t1) then true else exists_tag tl x t
+    in if (x=x1) && (equals_t tau tau1) then true else exists_tag tl x tau
   | _ -> false;;
 
-let has_projected t projected_nounces=
-  let rec iterate_nounces n projected_nounces =
-    match projected_nounces with
-    | n1::tl -> if n1 = n then true else iterate_nounces n tl
+(* Check whether a tag tau has been projected before.
+   NOTICE: I'm doing lazy checking here: if any nonce in the tag tau has been
+   projected before, then all t's inside tau should already been projected before. *)
+let has_projected tau projected_nonces=
+  let rec iterate_nonces n projected_nonces =
+    match projected_nonces with
+    | n1::tl -> if n1 = n then true else iterate_nonces n tl
     | _ -> false
-  in match t with
-  | (t, Ind ind)::tl -> iterate_nounces ind projected_nounces
+  in match tau with
+  | (t, Nonce nc)::tl -> iterate_nonces nc projected_nonces
   | _ -> false;;
 
-(* propagate x with type t using dataflow df *)
-let backward_propagate_wrapper all_df tags =
-  let rec backward_propagate df x t =
+(* Propagation *)
+
+(* Backward propagation *)
+let backward_propagate_wrapper all_df tags record_var =
+  let rec is_record x1 record_var =
+    match record_var with
+    | (Ident x2)::tl -> if x1 = x2 then true else is_record x1 tl
+    | _ -> false
+  (* backward propagate x with type t using dataflow df
+     propagates under 2 condition:
+      1. dataflow
+      2. record projection *)
+  in let rec backward_propagate df x t =
     (match df with
       | (Ident x1, Var (Ident x2))::tl -> if x1 = x && not (exists_tag tags x2 t)then (backward_propagate all_df x2 t)@(backward_propagate tl x t) else backward_propagate tl x t
       | (Ident x1, Closure(Record r, env))::tl ->
-        (if x1 = x && not (has_projected t (!projected_record_nounces)) then
+        (* Only continues to propagate if the variable is assigned a record in the program and the tag has not been projected before *)
+        (if x1 = x && is_record x1 record_var && not (has_projected t (!projected_record_nonces)) then
            (let rec propagate_all all_fields =
               (match all_fields with
                | (xx, tt)::tl -> (backward_propagate all_df xx tt)@(propagate_all tl)
@@ -363,8 +397,11 @@ let backward_propagate_wrapper all_df tags =
        | _ -> []
   in iterate_tags tags;;
 
-(* when encountering a record, just make a record of the field?  *)
+(* Forward propagation  *)
 let forward_propagate_wrapper all_df tags =
+  (* forward propagate x with type t using dataflow df
+     propagates under only 1 condition:
+      1. dataflow *)
   let rec forward_propagate x t df =
      match df with
      | (Ident x1, Var (Ident x2))::tl -> if x2 = x && not (exists_tag tags x1 t)then (forward_propagate x1 t all_df)@(forward_propagate x t tl) else forward_propagate x t tl
@@ -376,18 +413,21 @@ let forward_propagate_wrapper all_df tags =
         | _ -> []
  in iterate_tags tags;;
 
+(* Reform all the tags, transform cnf to dnf
+   Currently, assign *-[] for all variables that does not have tags *)
 let rec reform_tag tags (program:expr) =
   let cnf_to_dnf tags =
+    (* Product of all tags *)
     (let rec iterate_tau tau cur rst_tags=
       match tau with
-        | (t, ind)::tl -> (iterate_tags (intersect_t cur t) rst_tags)@(iterate_tau tl cur rst_tags)
+        | (t, nc)::tl -> (iterate_tags (intersect_t cur t) rst_tags)@(iterate_tau tl cur rst_tags)
         | _ ->[]
     and iterate_tags cur tags =
       match tags with
       | tau1::tl -> iterate_tau tau1 cur tl
-      | _ -> [(cur, Ind 0)]
+      | _ -> [(cur, Nonce (get_fresh_nonce 0))]
     in match tags with
-      | [] -> [(T (LStar, []), Ind 0)]
+      | [] -> [(T (LStar, []), Nonce (get_fresh_nonce 0))]
       | _ -> canonicalize_tau (iterate_tags (T (LStar, [])) tags))
   in let rec get_all_vars program =
     match program with
@@ -397,7 +437,7 @@ let rec reform_tag tags (program:expr) =
         match pa with
         | (p, e)::tl -> (get_all_vars e)@(iterate_pa tl)
         | _ -> []
-      in x::(iterate_pa pa)
+      in x::((iterate_pa pa)@(get_all_vars tl))
     | Clause (Ident x, _ )::tl -> x::get_all_vars tl
     | _ -> []
   in let rec find_tag x tags =
@@ -412,11 +452,12 @@ let rec reform_tag tags (program:expr) =
 
 
 (* todo:
-    1. test example 2
-    2. get record variable from program
-    3. fix reform tag index*)
-let rec type_inference all_df (program: expr) = fresh_nounce := 0;
-  let rec get_match_tags x (program: expr) =
+    1. change remove duplicate star
+    2. Example for record intersection *)
+let rec type_inference (program: expr) =
+  fresh_nonce := 0; projected_record_nonces := [];
+  let _ = eval program in let all_df = !global_env
+  in let rec get_match_tags x (program: expr) =
     match program with
     | Clause (Ident xx, Match (Ident x1, pa))::tl ->
       if xx=x then [(Ident x1, canonicalize_tau (pToTau pa))]
@@ -434,21 +475,34 @@ let rec type_inference all_df (program: expr) = fresh_nounce := 0;
          | t -> t)
     | Clause (Ident xx, body)::tl -> if xx = x then [] else get_match_tags x tl
     | _ -> []
+  in let rec get_record_var (program:expr) =
+    match program with
+    | Clause (Ident x, Record r)::tl -> (Ident x)::(get_record_var tl)
+    | Clause (Ident x, Function (x1,e))::tl -> (get_record_var e)@(get_record_var tl)
+    | Clause (Ident x, Match (x1, pa))::tl ->
+      let rec iterate_pattern pa =
+        match pa with
+        | (p,e)::ttll -> (get_record_var e)@(iterate_pattern ttll)
+        | _ -> []
+      in (iterate_pattern pa)@(get_record_var tl)
+    | Clause (Ident x, _)::tl -> get_record_var tl
+    | _ -> []
   in let rec get_all_match df =
        match df with
        | (Ident x, Var (Ident x2))::tl -> (get_match_tags x program)@(get_all_match tl)
        | hd::tl -> get_all_match tl
        | _ -> []
-  in let rec iterate_backward_forward tags =
-       (let backward = backward_propagate_wrapper all_df tags
+  in let rec iterate_backward_forward tags record_var =
+       (let backward = backward_propagate_wrapper all_df tags record_var
         in let forward = forward_propagate_wrapper all_df (tags@backward)
         in match (forward@backward) with
         | [] -> tags
-        | _ -> iterate_backward_forward (tags@forward@backward))
-  in reform_tag (iterate_backward_forward (get_all_match all_df)) program;;
+        | _ -> iterate_backward_forward (tags@forward@backward) record_var)
+  in reform_tag (iterate_backward_forward (get_all_match all_df) (get_record_var program)) program;;
 
-  (*
-  x1 = 1;
+(*
+  x0 = 1
+  x1 = x0;
   x2 = 2;
   x3 = {a:x1, b:x2}
   x4 = 3
@@ -456,7 +510,18 @@ let rec type_inference all_df (program: expr) = fresh_nounce := 0;
   x6 = Match x5 with
     | {c:{a:PInt, b:PTrue}} -> x7=7
     | PStar -> x8 = 8
-  *)
+
+expected res :
+x0 : (int-[]) U ( *-[int])
+x1 : (int-[]) U ( *-[int])
+x2 : (true-[]) U ( *-[true])
+x3 : ({a:int;b:true}-[]) U (/* - [{a:int; b:true}])
+x4 : (/* - [])
+x5 : ({c:{a:int; b:true}} - []) U (/* - [{c:{a:int; b:true}}])
+x6 : *-[]
+x7 : *-[]
+x8 : *-[]
+*)
 
 let in1 = [ Clause (Ident "x0", Int 1);
             Clause (Ident "x1", Var (Ident "x0"));
@@ -466,29 +531,7 @@ let in1 = [ Clause (Ident "x0", Int 1);
            Clause (Ident "x5", Record [(Lab "c", Ident "x3"); (Lab "d", Ident "x4")]);
            Clause (Ident "x6", Match (Ident "x5", [(PRecord [(Lab "c", PRecord [(Lab "a", PInt); (Lab "b", PTrue)])], [Clause (Ident "x7", Int 7)]);
                                                    (PStar, [Clause (Ident "x8", Int 8)])]))];;
-let out1 = eval in1;;
-let back = type_inference (!global_env) in1;;
-
-let rec getident x tags =
-  match tags with
-  | (Ident x1, t)::tl -> if x = x1 then (Ident x, t)::getident x tl else getident x tl
-  | _ -> [];;
-
-(* getident "x3" forward;;
-
-reform_tag [(Ident "x3",
-  [(T (LRecord [(Lab "a", LInt)], []), Ind 10);
-   (T (LRecord [(Lab "a", LStar)], [LRecord [(Lab "a", LInt)]]), Ind 9)]);
-   (Ident "x3",
-     [(T (LRecord [(Lab "a", LInt)], []), Ind 10);
-      (T (LRecord [(Lab "a", LStar)], [LRecord [(Lab "a", LInt)]]), Ind 9)]);
- (Ident "x3",
-  [(T (LRecord [(Lab "b", LTrue)], []), Ind 8);
-   (T (LRecord [(Lab "b", LStar)], [LRecord [(Lab "b", LTrue)]]), Ind 7)]);
- (Ident "x3",
-  [(T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 6);
-   (T (LStar, [LRecord [(Lab "a", LInt); (Lab "b", LTrue)]]), Ind 5)])] in1;; *)
-
+let res = type_inference in1;;
 
 (*
 x1 = 1
@@ -501,6 +544,12 @@ x7 = match x3 with
       | {b:true} -> x8 = 4
       | * - > x9 = 5
 x10 = x3
+
+res:
+x1 : (int - []) U (/*-[int])
+x2 : (true - []) U (/* - [true])
+x3 : ({a:int; b:true} - []) U ({b:true} - [{a:int}]) U ({a:int}-[{b:true}]) U (/* - {a:int; b:true})
+x10 : ({a:int; b:true} - []) U ({b:true} - [{a:int}]) U ({a:int}-[{b:true}]) U (/* - {a:int; b:true})
  *)
 let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x2", True);
@@ -508,8 +557,21 @@ let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x4", Match (Ident "x3", [(PRecord [(Lab "a", PInt)],[Clause (Ident "x5", Int 2)]);(PStar,[Clause (Ident "x6", Int 3)])]));
            Clause (Ident "x7", Match (Ident "x3", [(PRecord [(Lab "b", PTrue)],[Clause (Ident "x8", Int 4)]);(PStar,[Clause (Ident "x9", Int 5)])]));
            Clause (Ident "x10", Var (Ident "x3"))];;
-let out2 = eval in2;;
-let back2 = type_inference (!global_env) in2;;
-let forward2 = forward_propagate_wrapper (!global_env) back2;;
-let final_res2 = reform_tag back2 in2;;
-!global_env;;
+let res2 = type_inference in2;;
+
+(*
+x1 = 1
+x2 = {a:x1}
+x3 = match x2 with
+      | {a:int} -> x4 = 2
+      | * -> x5 = 3
+x6 = match x2 with
+      | {a:int} -> x7 = 4
+      | * -> x8 = 5*)
+let in3 = [Clause (Ident "x1", Int 1);
+           Clause (Ident "x2", Record [(Lab "a", Ident "x1")]);
+           Clause (Ident "x3", Match (Ident "x2", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x4", Int 2)]);
+                                                   (PStar, [Clause (Ident "x5", Int 3)])]));
+           Clause (Ident "x6", Match (Ident "x2", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x7", Int 4)]);
+                                                   (PStar, [Clause (Ident "x8", Int 5)])]))];;
+let res3 = type_inference in3;;
