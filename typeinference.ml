@@ -149,7 +149,7 @@ let eval clauses = global_env:= [];(eval_clauses clauses [], global_env);;
 let fresh_nonce = ref 0;;
 let get_fresh_nonce e = fresh_nonce := !fresh_nonce+1; let nonce = !fresh_nonce in nonce;;
 
-(* tells whether bt1 is subtype of bt2, they are both of bt type *)
+(* Check whether bt1 is subtype of bt2, they are both of bt type *)
 let rec is_subtype_bt (bt1:bt) (bt2:bt) =
   match (bt1, bt2) with
   | (_ , LStar) -> true
@@ -167,6 +167,26 @@ let rec is_subtype_bt (bt1:bt) (bt2:bt) =
           | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
           | _ -> true in check_record l1 l2)
   | _ -> false;;
+
+(* Check whether bt1 equals bt2 *)
+let rec equals_bt (bt1:bt) (bt2:bt) =
+    match (bt1, bt2) with
+    | (LStar , LStar) -> true
+    | (LInt, LInt) -> true
+    | (LFalse, LFalse) -> true
+    | (LTrue, LTrue) -> true
+    | (LFun, LFun) -> true
+    | (LRecord l1, LRecord l2) ->
+      let rec iterate_record l1 e2 =
+        match (l1,e2) with
+        | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
+        | _ -> false
+      in (let rec check_record l1 l2 =
+            match l2 with
+            | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
+            | _ -> true
+          in check_record l1 l2 && (check_record l2 l1))
+    | _ -> false;;
 
 (* canonicalize *)
 let canonicalize_tau tau =
@@ -202,6 +222,7 @@ let canonicalize_tau tau =
         (match (bt, neg) with
          | (LEmpty, _ ) -> true
          | _ -> false)
+      (* Check if tb is subtype of any element in neg *)
       in let rec tb_is_subtype_neg bt neg =
            match neg with
            | neg1::tl -> if is_subtype_bt bt neg1 then true else tb_is_subtype_neg bt tl
@@ -212,7 +233,7 @@ let canonicalize_tau tau =
            | neg1::tl ->
              let rec is_subtype_any_neg neg num1 =
                 (match neg with
-                  | neg2::ttll -> if ((num1 < num)&&(is_subtype_bt neg1 neg2)) then true else is_subtype_any_neg ttll (num1+1)
+                  | neg2::ttll -> if ((is_subtype_bt neg1 neg2) && (not (equals_bt neg1 neg2)|| (num1 < num))) then true else is_subtype_any_neg ttll (num1+1)
                   | _ -> false)
              in if (conflict neg1 bt) || (is_subtype_any_neg all_neg 1) then reform_neg tl bt all_neg (num+1) else neg1::(reform_neg tl bt all_neg (num+1))
            | _ -> []
@@ -415,10 +436,30 @@ let forward_propagate_wrapper all_df tags =
 
 (* Reform all the tags, transform cnf to dnf
    Currently, assign *-[] for all variables that does not have tags *)
+let old_nonce_to_new_tag_map = ref [];;
+
 let rec reform_tag tags (program:expr) =
-  let cnf_to_dnf tags =
+  let add_to_mapping old_tags (new_tags:(t*nonce) list) =
+    let rec add_all_tau_nonces tau new_tags=
+      (match tau with
+       | (t, Nonce nc)::tl -> (nc, new_tags)::(add_all_tau_nonces tl new_tags)
+       | _ -> [])
+    in let rec iterate_disjuncts tags =
+         (match tags with
+          | tau::tl -> (add_all_tau_nonces tau new_tags) @ (iterate_disjuncts tl)
+          | _ -> [])
+    in old_nonce_to_new_tag_map := (iterate_disjuncts old_tags) @ (!old_nonce_to_new_tag_map)
+  in let cnf_to_dnf tags =
+    (let already_exists_tags tags =
+       let rec iterate_map nc (map: (int*((t*nonce) list)) list) =
+         (match map with
+          | (nc1, tag)::tl -> if nc1 = nc then (true, tag) else iterate_map nc tl
+          | _ -> (false, []))
+       in (match tags with
+         | ((t, Nonce nc)::tl)::ttll -> iterate_map nc (!old_nonce_to_new_tag_map)
+         | _ -> (false, []))
     (* Product of all tags *)
-    (let rec iterate_tau tau cur rst_tags=
+    in let rec iterate_tau tau cur rst_tags=
       match tau with
         | (t, nc)::tl -> (iterate_tags (intersect_t cur t) rst_tags)@(iterate_tau tl cur rst_tags)
         | _ ->[]
@@ -426,9 +467,11 @@ let rec reform_tag tags (program:expr) =
       match tags with
       | tau1::tl -> iterate_tau tau1 cur tl
       | _ -> [(cur, Nonce (get_fresh_nonce 0))]
-    in match tags with
+    in let (already_exist, res)= already_exists_tags tags
+    in if already_exist then res else
+    match tags with
       | [] -> [(T (LStar, []), Nonce (get_fresh_nonce 0))]
-      | _ -> canonicalize_tau (iterate_tags (T (LStar, [])) tags))
+      | _ -> (let new_tag = canonicalize_tau (iterate_tags (T (LStar, [])) tags) in add_to_mapping tags new_tag; new_tag))
   in let rec get_all_vars program =
     match program with
     | Clause (Ident x, Function (Ident x1, e))::tl -> [x]@(get_all_vars tl)@(get_all_vars e)
@@ -455,7 +498,7 @@ let rec reform_tag tags (program:expr) =
     1. change remove duplicate star
     2. Example for record intersection *)
 let rec type_inference (program: expr) =
-  fresh_nonce := 0; projected_record_nonces := [];
+  fresh_nonce := 0; projected_record_nonces := []; old_nonce_to_new_tag_map:= [];
   let _ = eval program in let all_df = !global_env
   in let rec get_match_tags x (program: expr) =
     match program with
@@ -498,7 +541,8 @@ let rec type_inference (program: expr) =
         in match (forward@backward) with
         | [] -> tags
         | _ -> iterate_backward_forward (tags@forward@backward) record_var)
-  in reform_tag (iterate_backward_forward (get_all_match all_df) (get_record_var program)) program;;
+in reform_tag (iterate_backward_forward (get_all_match all_df) (get_record_var program)) program;;
+(* in (iterate_backward_forward (get_all_match all_df) (get_record_var program));; *)
 
 (*
   x0 = 1
@@ -550,6 +594,7 @@ x1 : (int - []) U (/*-[int])
 x2 : (true - []) U (/* - [true])
 x3 : ({a:int; b:true} - []) U ({b:true} - [{a:int}]) U ({a:int}-[{b:true}]) U (/* - {a:int; b:true})
 x10 : ({a:int; b:true} - []) U ({b:true} - [{a:int}]) U ({a:int}-[{b:true}]) U (/* - {a:int; b:true})
+Nonce of x3 and x10 should be the same. 
  *)
 let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x2", True);
@@ -558,6 +603,7 @@ let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x7", Match (Ident "x3", [(PRecord [(Lab "b", PTrue)],[Clause (Ident "x8", Int 4)]);(PStar,[Clause (Ident "x9", Int 5)])]));
            Clause (Ident "x10", Var (Ident "x3"))];;
 let res2 = type_inference in2;;
+!old_nonce_to_new_tag_map;;
 
 (*
 x1 = 1
@@ -567,7 +613,12 @@ x3 = match x2 with
       | * -> x5 = 3
 x6 = match x2 with
       | {a:int} -> x7 = 4
-      | * -> x8 = 5*)
+      | * -> x8 = 5
+
+res:
+x1: (int-[]) U (/*-[int])
+x2: ({a:int}-[]) U (/* - [{a:int}])
+*)
 let in3 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x2", Record [(Lab "a", Ident "x1")]);
            Clause (Ident "x3", Match (Ident "x2", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x4", Int 2)]);
