@@ -1,15 +1,4 @@
-type ident = Ident of string;;
-type label = Lab of string;;
-
-type body = Int of int | True | False | Closure of body * env | Function of ident * expr | Record of (label * ident) list
-          | Var of ident | Appl of ident * ident | Proj of ident * label
-          | Plus of ident * ident | Minus of ident * ident | LessThan of ident * ident | Equals of ident * ident
-          | And of ident * ident | Or of ident * ident | Not of ident
-          | Match of ident * (pattern * expr) list
-and env = (ident * body) list
-and clause = Clause of ident * body
-and expr = clause list
-and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
+open Layout;;
 
 exception VariableNotFound;;
 exception IncorrectType of string;;

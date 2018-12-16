@@ -1,22 +1,7 @@
-type ident = Ident of string;;
-type label = Lab of string;;
+open Layout;;
 
-type body = Int of int | True | False | Closure of body * env | Function of ident * expr | Record of (label * ident) list | OrVal of body list | Empty
-          | Var of ident | Appl of ident * ident | Proj of ident * label
-          | Plus of ident * ident | Minus of ident * ident | LessThan of ident * ident | Equals of ident * ident
-          | And of ident * ident | Or of ident * ident | Not of ident
-          | Match of ident * (pattern * expr) list
-and env = (ident * body) list
-and clause = Clause of ident * body
-and expr = clause list
-and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
-
-exception VariableNotFound;;
-exception IncorrectType of string;;
 exception BodyNotMatched;;
 exception ClauseNotMatched;;
-exception InvalidPatternMatch;;
-exception PatternNotMatched;;
 exception ForkFailed;;
 
 let global_env = ref [];;
@@ -37,17 +22,17 @@ let rec pattern_match x (p:pattern) (ev:env) =
   | (True, PTrue) -> true
   | (False, PFalse) -> true
   | (Closure(Function (x1, e1), eevv), PFun) -> true
-  | (_, PStar) -> true
   | (Closure(Record r1, eevv), PRecord p1) ->
     let rec iterate_record r pp =
       (match (r,pp) with
        | ((Lab l1, Ident x1)::tl, (Lab l2, p2)) -> if l1 = l2 then (pattern_match x1 p2 eevv) else (iterate_record tl pp)
-       | _ -> raise InvalidPatternMatch) in
+       | _ -> false) in
     (let rec iterate_record_pattern r p1 =
        match p1 with
        | hd::tl -> if (iterate_record r hd) then iterate_record_pattern r tl else false
        | _ -> true
      in iterate_record_pattern r1 p1)
+  | (_, PStar) -> true
   |  _ -> false;;
 
 let rec get_last_variable_from_expr e =
@@ -113,7 +98,7 @@ let rec eval_body (b:body) (ev:env) (flowto: ident)=
        (match p with
         | (pp, ee)::tl -> if (pattern_match x1 pp ev) then (global_env := (flowto, Var (Ident (get_last_variable_from_expr ee)))::!global_env;
                                                             eval_clauses ee ev)
-                                                      else match_pattern x1 tl
+          else match_pattern x1 tl
         | _ -> Empty)
      in match_pattern x1 p)
   | _ -> raise BodyNotMatched
@@ -139,11 +124,6 @@ and eval_clauses (clauses:expr) (ev:env)=
 
 let eval clauses = global_env:= [];(eval_clauses clauses [], global_env);;
 
-(* (let rec match_pattern x1 p =
-   (match p with
-    | (pp, ee)::tl -> if (pattern_match x1 pp ev) then eval_clauses ee ev else match_pattern x1 tl
-    | _ -> raise PatternNotMatched)
-   in match_pattern (find_var x1 ev) p) *)
 (*
 x1 = 1 or 2
 x2 = 2

@@ -1,1 +1,8 @@
 .DS_Store
+*.cmi
+*.cmx
+*.o
+typechecker
+typeinference
+interpreter
+setinterpreter
