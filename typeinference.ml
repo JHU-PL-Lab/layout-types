@@ -344,21 +344,16 @@ let extract_fields r tau =
           match tag with
           | LStar -> true
           | _ -> false
-  in let rec exist_empty tags =
-       match tags with
-       | LEmpty::tl -> true
-       | hd::tl -> exist_empty tl
-       | _ -> false
-  in let rec iterate_tau l tau =
+  in let rec iterate_tau l tau has_star=
     (match tau with
       | (T (bt, neg), Nonce nonce )::tl -> projected_record_nonces := nonce :: (!projected_record_nonces);
         let pos_tag = proj_field bt l false
         in let neg_tag = iterate_neg_t neg l
-        in if is_star pos_tag && exist_empty neg_tag then iterate_tau l tl else (T (pos_tag, neg_tag), Nonce (get_fresh_nonce 0))::(iterate_tau l tl)
+        in if is_star pos_tag then (if has_star then iterate_tau l tl true else (T (pos_tag, neg_tag), Nonce (get_fresh_nonce 0))::(iterate_tau l tl true)) else (T (pos_tag, neg_tag), Nonce (get_fresh_nonce 0))::(iterate_tau l tl has_star)
       | _ -> [])
   in let rec iterate_record r tau =
     (match r with
-      | (Lab l, Ident x1)::tl -> (x1, canonicalize_tau (iterate_tau l tau))::(iterate_record tl tau)
+      | (Lab l, Ident x1)::tl -> (x1, canonicalize_tau (iterate_tau l tau false))::(iterate_record tl tau)
       | _ -> [])
   in iterate_record r tau;;
 
@@ -499,12 +494,12 @@ let rec reform_tag tags (program:expr) =
        | _ -> []
   in iterate_all_vars (get_all_vars program);;
 
-
-(* todo:
-    1. Example for record intersection*)
 (* Problems:
-   1. conflict
-   2. projection * vs empty *)
+   1. conflict (empty)
+   2. projection * vs empty
+   3. overlap in final result
+   4. Remove empty field during intersection
+   5. Example of two variables flow into the same one. *)
 
 let rec type_inference (program: expr) =
   fresh_nonce := 0; projected_record_nonces := []; old_nonce_to_new_tag_map:= [];
@@ -569,11 +564,7 @@ x0 : (int-[]) U ( *-[int])
 x1 : (int-[]) U ( *-[int])
 x2 : (true-[]) U ( *-[true])
 x3 : ({a:int;b:true}-[]) U (/* - [{a:int; b:true}])
-x4 : (/* - [])
 x5 : ({c:{a:int; b:true}} - []) U (/* - [{c:{a:int; b:true}}])
-x6 : *-[]
-x7 : *-[]
-x8 : *-[]
 *)
 
 let in1 = [ Clause (Ident "x0", Int 1);
@@ -586,7 +577,7 @@ let in1 = [ Clause (Ident "x0", Int 1);
                                                    (PStar, [Clause (Ident "x8", Int 8)])]))];;
 let res = type_inference in1;;
 
-(*
+(* Test whether x10 and x3 have same nonce
 x1 = 1
 x2 = true
 x3 = {a:x1; b:x2}
@@ -613,7 +604,7 @@ let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x10", Var (Ident "x3"))];;
 let res2 = type_inference in2;;
 
-(*
+(* Test intersection of same tags
 x1 = 1
 x2 = {a:x1}
 x3 = match x2 with
@@ -683,12 +674,12 @@ let in4 = [Clause (Ident "x1", Record []);
                                        (PStar, [Clause (Ident "x14", Int 9)])]))];;
 let res4 = type_inference in4;;
 
-(* let rec get_ident res x =
+let rec get_ident res x =
   match res with
   | (Ident x1, tag)::tl -> if x = x1 then tag else get_ident tl x
   | _ ->[];;
 
-get_ident res4 "x3";; *)
+get_ident res4 "x3";;
 
  (*
 
@@ -713,3 +704,46 @@ let in5 = [Clause (Ident "x1", Record []);
                                                    (PRecord [(Lab "d", PStar)], [Clause (Ident "x6", Int 2)]);
                                                    (PStar, [Clause (Ident "x7", Int 3)])]))];;
 let res5 = type_inference in5;;
+
+(* Test intersection of records
+x1 = 1
+x2 = true
+x3 = {a:x1; b:x2}
+x4 = false
+x5 = {c: x3; d: x4}
+x6 = match x5 with
+    | {c: {}; d: true } -> x7 = 1
+    | {c: {a:int}; d: false} -> x8 = 2
+    | * -> x9 = 3
+x10 = match x5 with
+    | {c: {}; d: int } -> x11 = 4
+    | {c: {b:true}; d: false} -> x12 = 5
+    | * -> x13 = 6
+
+res:
+   x1: * U int
+   x2: * U true
+   x3: {} U {b:true} U {a:int; b:true} U {a:int} U *-{}
+   x4: true U false U int U (/* - [true, false, int])
+   x5: {c:{};d:true}
+      U {c:{a:int; b:true}; d:false} U ({c:{a:int}; d:false} - {c:{b:true}; d:false})
+      U {c:{}; d:int} U ({c:{b:true}; d:false} - {c:{a:int}; d:false}) U (/* - [{c:{a:int}; d:false}; {c:{};d:true}; {c:{}; d:int}; {c:{b:true}; d:false}])
+
+ *)
+let in6 = [Clause (Ident "x1", Int 1);
+           Clause (Ident "x2", True);
+           Clause (Ident "x3", Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           Clause (Ident "x4", False);
+           Clause (Ident "x5", Record [(Lab "c", Ident "x3"); (Lab "d", Ident "x4")]);
+           Clause (Ident "x6", Match (Ident "x5", [(PRecord [(Lab "c", PRecord []);(Lab "d", PTrue)],[Clause (Ident "x7", Int 1)]);
+                                                   (PRecord [(Lab "c", PRecord [(Lab "a", PInt)]); (Lab "d", PFalse)],[Clause (Ident "x8", Int 2)]);
+                                                   (PStar,[Clause (Ident "x9", Int 3)])]));
+           Clause (Ident "x10", Match (Ident "x5", [(PRecord [(Lab "c", PRecord []); (Lab "d", PInt)],[Clause (Ident "x11", Int 4)]);
+                                                    (PRecord [(Lab "c", PRecord [(Lab "b", PTrue)]); (Lab "d", PFalse)], [Clause (Ident "x12", Int 5)]);
+                                                    (PStar, [Clause (Ident "x13", Int 6)])]))];;
+let res6 = type_inference in6;;
+get_ident res6 "x5";;
+
+
+(* Test iteration of backward/forward
+ *)
