@@ -11,9 +11,12 @@ type body = Int of int | True | False | Closure of body * env | Function of iden
           | Plus of ident * ident | Minus of ident * ident | LessThan of ident * ident | Equals of ident * ident
           | And of ident * ident | Or of ident * ident | Not of ident
           | Match of ident * (pattern * expr) list
+          | TaggedFunction of ident * tagged_expr | TaggedMatch of ident * (pattern * tagged_expr) list
 and env = (ident * body) list
-and clause = Clause of ident * tau * body
+and clause = Clause of ident * body
+and tagged_clause = TaggedClause of ident * tau * body
 and expr = clause list
+and tagged_expr = tagged_clause list
 and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
 
 exception BodyNotMatched;;
@@ -54,7 +57,7 @@ let rec pattern_match x (p:pattern) (ev:env) =
 
 let rec get_last_variable_from_expr e =
   match e with
-  | Clause (Ident x, t, b)::[] -> x
+  | Clause (Ident x, b)::[] -> x
   | hd::tl -> get_last_variable_from_expr tl
   | _ -> raise ClauseNotMatched;;
 
@@ -121,10 +124,10 @@ let rec eval_body (b:body) (ev:env) (flowto: ident)=
   | _ -> raise BodyNotMatched
 and eval_clauses (clauses:expr) (ev:env)=
   match clauses with
-  | Clause (Ident x,Tau t, b)::[] -> let res = eval_body b ev (Ident x) in (global_env := (Ident x, res) :: !global_env; match res with
+  | Clause (Ident x, b)::[] -> let res = eval_body b ev (Ident x) in (global_env := (Ident x, res) :: !global_env; match res with
     | OrVal o -> OrVal o
     | _ -> OrVal [res])
-  | Clause (Ident x,Tau t, b)::tl ->
+  | Clause (Ident x, b)::tl ->
     let rec fork l =
       (match l with
        | hhdd::[] -> global_env := (Ident x, hhdd) :: !global_env; eval_clauses tl ((Ident x, hhdd)::ev);
@@ -142,15 +145,15 @@ and eval_clauses (clauses:expr) (ev:env)=
 let eval clauses = global_env:= [];(eval_clauses clauses [], global_env);;
 
 (* helper methods *)
-let rec get_all_typedec expr =
+let rec get_all_typedec (expr: tagged_expr) =
   match expr with
-  | Clause (Ident x, Tau tau, Function (Ident x1, e1))::tl -> (Ident x, Tau tau)::(get_all_typedec tl)@(get_all_typedec e1)
-  | Clause (Ident x, Tau tau, Match (Ident x1, pattern))::tl ->
+  | TaggedClause (Ident x, Tau tau, TaggedFunction (Ident x1, e1))::tl -> (Ident x, Tau tau)::(get_all_typedec tl)@(get_all_typedec e1)
+  | TaggedClause (Ident x, Tau tau, TaggedMatch (Ident x1, pattern))::tl ->
     (let rec iterate_pattern pattern =
        match pattern with
        |(p1, e1)::ttll -> (get_all_typedec e1)@(iterate_pattern ttll)
        | _ -> [] in (Ident x, Tau tau)::(iterate_pattern pattern)@(get_all_typedec tl))
-  | Clause (Ident x, Tau tau, b)::tl -> (Ident x, Tau tau)::(get_all_typedec tl)
+  | TaggedClause (Ident x, Tau tau, b)::tl -> (Ident x, Tau tau)::(get_all_typedec tl)
   | _ -> [];;
 
 let rec find_tau typedec x =
@@ -161,54 +164,54 @@ let rec find_tau typedec x =
 (* Atomic typed *)
 (* should we include OrVals?
    should we include false/true for and/or/not? *)
-let rec atomic_typed (program:expr) =
+let rec atomic_typed (program:tagged_expr) =
   match program with
-  | Clause (Ident x, Tau tau, Int i)::tl ->
+  | TaggedClause (Ident x, Tau tau, Int i)::tl ->
     (match tau with
      | [(T (LInt, []), Ind ind)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, True)::tl ->
+  | TaggedClause (Ident x, Tau tau, True)::tl ->
     (match tau with
      | [(T (LTrue, []), Ind ind)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, False)::tl ->
+  | TaggedClause (Ident x, Tau tau, False)::tl ->
     (match tau with
      | [(T (LFalse, []), Ind ind)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Function (x1, e1))::tl ->
+  | TaggedClause (Ident x, Tau tau, TaggedFunction (x1, e1))::tl ->
     (match tau with
      | [(T (LFun, []), Ind ind)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Equals (x1, x2))::tl ->
+  | TaggedClause (Ident x, Tau tau, Equals (x1, x2))::tl ->
     (match tau with
      | [(T (LTrue, []), Ind ind);(T (LFalse, []), Ind ind2)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Plus (x1, x2))::tl ->
+  | TaggedClause (Ident x, Tau tau, Plus (x1, x2))::tl ->
     (match tau with
      | [(T (LInt, []), Ind ind)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Minus (x1, x2))::tl ->
+  | TaggedClause (Ident x, Tau tau, Minus (x1, x2))::tl ->
     (match tau with
      | [(T (LInt, []), Ind ind)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, And (x1, x2))::tl ->
+  | TaggedClause (Ident x, Tau tau, And (x1, x2))::tl ->
     (match tau with
      | [(T (LTrue, []), Ind ind);(T (LFalse, []), Ind ind2)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Or (x1, x2))::tl ->
+  | TaggedClause (Ident x, Tau tau, Or (x1, x2))::tl ->
     (match tau with
      | [(T (LTrue, []), Ind ind);(T (LFalse, []), Ind ind2)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Not x1)::tl ->
+  | TaggedClause (Ident x, Tau tau, Not x1)::tl ->
     (match tau with
      | [(T (LTrue, []), Ind ind);(T (LFalse, []), Ind ind2)] -> atomic_typed tl
      | _ -> false)
-  | Clause (Ident x, Tau tau, Match (x1, patterns))::tl ->
+  | TaggedClause (Ident x, Tau tau, TaggedMatch (x1, patterns))::tl ->
     (let rec check_all_patterns patterns =
        match patterns with
        | (p1, e1)::ttll -> atomic_typed e1 && check_all_patterns ttll
        | _ -> true in check_all_patterns patterns && atomic_typed tl)
-  | Clause (Ident x, Tau tau, b)::tl -> atomic_typed tl
+  | TaggedClause (Ident x, Tau tau, b)::tl -> atomic_typed tl
   | _ -> true;;
 
 (* Subtype soundness *)
@@ -263,7 +266,7 @@ let rec sound_subtype typedec (df:env) =
   | _ -> true;;
 
 (* Record Soundness *)
-let rec record_soundness typedec (program:expr) =
+let rec record_soundness typedec (program:tagged_expr) =
   let get_canonical_record_wrapper r =
     (let rec get_canonical_record r =
       match r with
@@ -296,7 +299,7 @@ let rec record_soundness typedec (program:expr) =
     | (t1, Ind ind)::tl -> if is_subtype_t r1 t1 then ind else iterate_tau r1 tl
     | _ -> -1) in
   (match program with
-  | (Clause (Ident x, Tau tau, Record r))::tl ->
+  | (TaggedClause (Ident x, Tau tau, Record r))::tl ->
     let rec iterate_product product tau =
       match product with
       | (record, nounce_list)::tl ->let match_ind = iterate_tau (get_canonical_record_wrapper record) tau in
@@ -371,7 +374,7 @@ let rec t_pattern_match bt neg pattern =
     | _ -> true
   in tb_pattern_match bt pattern && iterate_neg neg pattern;;
 
-let rec pattern_complete typedec (program:expr) =
+let rec pattern_complete typedec (program:tagged_expr) =
   let rec pattern_cover tau patterns =
     (match tau with
     | (T (bt, neg), Ind i)::tl ->
@@ -384,16 +387,28 @@ let rec pattern_complete typedec (program:expr) =
       in if (cur_match != 0) && tail_match then (true, (Ind i, cur_match)::delta) else (false, [])
     | _ -> (true, [])) in
   (match program with
-    | (Clause (Ident x1, Tau tau, Match (Ident x2, patterns)))::tl ->
+    | (TaggedClause (Ident x1, Tau tau, TaggedMatch (Ident x2, patterns)))::tl ->
       let (match_cur, table_cur) = pattern_cover (find_tau typedec x2) patterns
       in let (match_tail, delta_tail) = pattern_complete typedec tl
       in if match_cur && match_tail then (true, (Ident x1, table_cur) :: delta_tail) else (false, [])
     | hd::tl -> pattern_complete typedec tl
     | _ -> (true,[]));;
 
+let rec untag_program (program:tagged_expr) =
+  match program with
+  | TaggedClause (x, t, TaggedFunction (xx, e))::tl -> Clause (x, Function (xx, untag_program e))::(untag_program tl)
+  | TaggedClause (x, t, TaggedMatch (xx, pa))::tl ->
+    let rec untag_pattern pa =
+      (match pa with
+       | (p, e)::tl -> (p, untag_program e)::(untag_pattern tl)
+       | _ ->[])
+    in Clause (x, Match (xx, untag_pattern pa))::(untag_program tl)
+  | TaggedClause (x, t, b)::tl -> Clause (x, b)::(untag_program tl)
+  | _ -> [];;
+
 (* typechecking, return true/false, rou and delta *)
-let typecheck (program:expr) =
-  let (_, global) = eval program in
+let typecheck (program:tagged_expr) =
+  let (_, global) = eval (untag_program program) in
   let typedec = get_all_typedec program in
   let (recordsound, rou) = (record_soundness typedec program) in
   let (patterncomplete, delta) = (pattern_complete typedec program) in
@@ -410,9 +425,9 @@ sound = true
 rou = []
 delta = []
 *)
-let in1 = [Clause (Ident "x1",Tau [( T (LInt, []), Ind 1)], Int 1);
-           Clause (Ident "x2",Tau [( T (LInt, []), Ind 2)], Int 2);
-           Clause (Ident "x3",Tau [( T (LInt, []), Ind 3)], Plus (Ident "x1", Ident "x2"))];;
+let in1 = [TaggedClause (Ident "x1",Tau [( T (LInt, []), Ind 1)], Int 1);
+           TaggedClause (Ident "x2",Tau [( T (LInt, []), Ind 2)], Int 2);
+           TaggedClause (Ident "x3",Tau [( T (LInt, []), Ind 3)], Plus (Ident "x1", Ident "x2"))];;
 let (sound1, rou1, delta1) = typecheck in1;;
 
 (*
@@ -426,9 +441,9 @@ sound = True
 rou = []
 delta = []
 *)
-let in2 = [Clause (Ident "x1",Tau [( T (LTrue, []), Ind 1)], True);
-           Clause (Ident "x2",Tau [( T (LFalse, []), Ind 2)], False);
-           Clause (Ident "x3",Tau [( T (LTrue, []), Ind 3); ( T (LFalse, []), Ind 4)], And (Ident "x1", Ident "x2"))];;
+let in2 = [TaggedClause (Ident "x1",Tau [( T (LTrue, []), Ind 1)], True);
+           TaggedClause (Ident "x2",Tau [( T (LFalse, []), Ind 2)], False);
+           TaggedClause (Ident "x3",Tau [( T (LTrue, []), Ind 3); ( T (LFalse, []), Ind 4)], And (Ident "x1", Ident "x2"))];;
 let (sound2, rou2, delta2) = typecheck in2;;
 
 (*
@@ -441,8 +456,8 @@ sound = true
 rou = []
 delta = []
 *)
-let in3 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
-           Clause (Ident "x2", Tau [( T (LInt, []), Ind 2)], Var(Ident "x1"))];;
+let in3 = [TaggedClause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
+           TaggedClause (Ident "x2", Tau [( T (LInt, []), Ind 2)], Var(Ident "x1"))];;
 let (sound3, rou3, delta3) = typecheck in3;;
 
 (*
@@ -458,10 +473,10 @@ sound = true
 rou:[(x3, [(1,2)->3])]
 delta: [(x4, [(3->1)])]
 *)
-let in4 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
-           Clause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
-           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
-           Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
+let in4 = [TaggedClause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
+           TaggedClause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
+           TaggedClause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           TaggedClause (Ident "x4", Tau [( T (LInt, []), Ind 4)], TaggedMatch (Ident "x3", [(PRecord [(Lab "a", PInt)], [TaggedClause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
 let (sound4, rou4, delta4) = typecheck in4;;
 
 
@@ -475,10 +490,10 @@ x4 :LInt = Match x3 with
 sound = false
 *)
 
-let in5 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
-           Clause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
-           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LStar)], []), Ind 3); (T (LRecord [(Lab "b", LStar)], [LRecord [(Lab "c", LStar)]]), Ind 6)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
-           Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PStar);(Lab "c", PStar)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
+let in5 = [TaggedClause (Ident "x1", Tau [( T (LInt, []), Ind 1)], Int 1);
+           TaggedClause (Ident "x2", Tau [( T (LTrue, []), Ind 2)], True);
+           TaggedClause (Ident "x3", Tau [( T (LRecord [(Lab "a", LStar)], []), Ind 3); (T (LRecord [(Lab "b", LStar)], [LRecord [(Lab "c", LStar)]]), Ind 6)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           TaggedClause (Ident "x4", Tau [( T (LInt, []), Ind 4)], TaggedMatch (Ident "x3", [(PRecord [(Lab "a", PStar);(Lab "c", PStar)], [TaggedClause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
 
 let (sound5, rou5, delta5) = typecheck in5;;
 
@@ -493,11 +508,11 @@ x5 : {a: {q:LStar}; b: {r:LStar}} - [{a: {q:LInt}}; {a:{q:LFalse}};
 sound = false ****should be fixed
 *)
 
-let in6 = [Clause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
-           Clause (Ident "x2", Tau [(T (LFalse, []), Ind 2)], False);
-           Clause (Ident "x3", Tau [(T (LRecord [(Lab "q", LStar)],[LRecord [(Lab "q", LInt)];LRecord [(Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
-           Clause (Ident "x4", Tau [(T (LRecord [(Lab "r", LStar)], [LRecord [(Lab "r", LInt)]]), Ind 4)], Record [(Lab "r", Ident "x2")]);
-           Clause (Ident "x5",
+let in6 = [TaggedClause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
+           TaggedClause (Ident "x2", Tau [(T (LFalse, []), Ind 2)], False);
+           TaggedClause (Ident "x3", Tau [(T (LRecord [(Lab "q", LStar)],[LRecord [(Lab "q", LInt)];LRecord [(Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
+           TaggedClause (Ident "x4", Tau [(T (LRecord [(Lab "r", LStar)], [LRecord [(Lab "r", LInt)]]), Ind 4)], Record [(Lab "r", Ident "x2")]);
+           TaggedClause (Ident "x5",
                    Tau [(T (LRecord [(Lab "a", LRecord [(Lab "q", LStar)]);(Lab "b", LRecord [(Lab "r", LStar)])],
                             [LRecord [(Lab "a", LRecord [(Lab "q", LInt)])];
                              LRecord [(Lab "a", LRecord [(Lab "q", LFalse)])];
@@ -512,8 +527,8 @@ x3 : {q:LStar} - [{q:LInt}, {q:LFalse}] = {q:x1}
 sound = false
 *)
 
-let in7 = [Clause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
-           Clause (Ident "x3", Tau [(T (LRecord [(Lab "q", LStar)],[LRecord [(Lab "q", LInt)];LRecord [(Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
+let in7 = [TaggedClause (Ident "x1", Tau [(T (LTrue, []), Ind 1)], True);
+           TaggedClause (Ident "x3", Tau [(T (LRecord [(Lab "q", LStar)],[LRecord [(Lab "q", LInt)];LRecord [(Lab "q", LFalse)]]), Ind 3)], Record [(Lab "q", Ident "x1")]);
           ];;
 let (sound7, rou7, delta7) = typecheck in7;;
 
@@ -534,15 +549,15 @@ sound = false
 rou:[(x3, [(1,3)->5; (1,4)->6; (2,3)->7; (2,4)->8])]
 delta: [(x4, [5->1;6->1; 7->2; 8->2])]
 *)
-let in8 = [Clause (Ident "x1", Tau [( T (LInt, []), Ind 1); ( T (LTrue, []), Ind 2)], Int 1);
-           Clause (Ident "x2", Tau [( T (LTrue, []), Ind 3);( T (LFalse, []), Ind 4)], True);
-           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 5);
+let in8 = [TaggedClause (Ident "x1", Tau [( T (LInt, []), Ind 1); ( T (LTrue, []), Ind 2)], Int 1);
+           TaggedClause (Ident "x2", Tau [( T (LTrue, []), Ind 3);( T (LFalse, []), Ind 4)], True);
+           TaggedClause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 5);
                                     ( T (LRecord [(Lab "a", LInt); (Lab "b", LFalse)], []), Ind 6);
                                     ( T (LRecord [(Lab "a", LTrue); (Lab "b", LTrue)], []), Ind 7);
                                     ( T (LRecord [(Lab "a", LTrue); (Lab "b", LFalse)], []), Ind 8);], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
-           Clause (Ident "x4", Tau [( T (LInt, []), Ind 9)], Match (Ident "x3",
-                                                                    [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 10)], Int 3)]);
-                                                                     (PRecord [(Lab "a", PTrue)], [Clause (Ident "x6", Tau [( T (LInt, []), Ind 11)], Int 4)])]))];;
+           TaggedClause (Ident "x4", Tau [( T (LInt, []), Ind 9)], TaggedMatch (Ident "x3",
+                                                                    [(PRecord [(Lab "a", PInt)], [TaggedClause (Ident "x5", Tau [( T (LInt, []), Ind 10)], Int 3)]);
+                                                                     (PRecord [(Lab "a", PTrue)], [TaggedClause (Ident "x6", Tau [( T (LInt, []), Ind 11)], Int 4)])]))];;
 let (sound8, rou8, delta8) = typecheck in8;;
 
 
@@ -559,8 +574,8 @@ sound = false
 rou:[(x3, [(1,2)->3])]
 delta: [(x4, [(3->1)])]
 *)
-let in9 = [Clause (Ident "x1", Tau [( T (LInt, [LTrue]), Ind 1)], Int 1);
-           Clause (Ident "x2", Tau [( T (LTrue, [LFalse]), Ind 2)], True);
-           Clause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
-           Clause (Ident "x4", Tau [( T (LInt, []), Ind 4)], Match (Ident "x3", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
+let in9 = [TaggedClause (Ident "x1", Tau [( T (LInt, [LTrue]), Ind 1)], Int 1);
+           TaggedClause (Ident "x2", Tau [( T (LTrue, [LFalse]), Ind 2)], True);
+           TaggedClause (Ident "x3", Tau [( T (LRecord [(Lab "a", LInt); (Lab "b", LTrue)], []), Ind 3)], Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
+           TaggedClause (Ident "x4", Tau [( T (LInt, []), Ind 4)], TaggedMatch (Ident "x3", [(PRecord [(Lab "a", PInt)], [TaggedClause (Ident "x5", Tau [( T (LInt, []), Ind 5)], Int 3)])]))];;
 let (sound9, rou9, delta9) = typecheck in9;;
