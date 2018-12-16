@@ -193,8 +193,8 @@ let canonicalize_tau tau =
   (* Check if bt1 has conflict with bt2, see Deinifition 1.6 Rule 6 for specification *)
   let rec conflict (bt1:bt) (bt2:bt) =
     (match (bt1,bt2) with
-     | (LEmpty, _ ) -> true
-     | (_, LEmpty ) -> true
+     | (LEmpty, _ ) -> false
+     | (_, LEmpty ) -> false
      | (LStar, _ ) -> false
      | (_, LStar) -> false
      | (LInt, LInt) -> false
@@ -249,12 +249,7 @@ let canonicalize_tau tau =
        | (T (LEmpty, []), nc)::tl -> remove_empty_tags tl
        | hd::tl -> hd::(remove_empty_tags tl)
        | _ -> []
-  in let rec remove_duplicate_star tau has_star=
-       match tau with
-       | (T (LStar, []), nc)::tl -> if has_star then (remove_duplicate_star tl true) else (T (LStar, []), nc)::(remove_duplicate_star tl true)
-       | hd::tl -> hd::(remove_duplicate_star tl has_star)
-       | _ -> []
-  in remove_duplicate_star (remove_empty_tags (iterate_tau tau)) false;;
+  in remove_empty_tags (iterate_tau tau);;
 
 (* Intersection of two tags, see Definition 1.8 for specification *)
 let intersect_t t1 t2 =
@@ -345,10 +340,21 @@ let extract_fields r tau =
        (match neg with
         | bt::tl -> (proj_field bt l true)::(iterate_neg_t tl l)
         | _ -> [])
+  in let is_star tag =
+          match tag with
+          | LStar -> true
+          | _ -> false
+  in let rec exist_empty tags =
+       match tags with
+       | LEmpty::tl -> true
+       | hd::tl -> exist_empty tl
+       | _ -> false
   in let rec iterate_tau l tau =
     (match tau with
       | (T (bt, neg), Nonce nonce )::tl -> projected_record_nonces := nonce :: (!projected_record_nonces);
-                                      (T (proj_field bt l false, iterate_neg_t neg l), Nonce (get_fresh_nonce 0))::(iterate_tau l tl)
+        let pos_tag = proj_field bt l false
+        in let neg_tag = iterate_neg_t neg l
+        in if is_star pos_tag && exist_empty neg_tag then iterate_tau l tl else (T (pos_tag, neg_tag), Nonce (get_fresh_nonce 0))::(iterate_tau l tl)
       | _ -> [])
   in let rec iterate_record r tau =
     (match r with
@@ -495,8 +501,11 @@ let rec reform_tag tags (program:expr) =
 
 
 (* todo:
-    1. change remove duplicate star
-    2. Example for record intersection *)
+    1. Example for record intersection*)
+(* Problems:
+   1. conflict
+   2. projection * vs empty *)
+
 let rec type_inference (program: expr) =
   fresh_nonce := 0; projected_record_nonces := []; old_nonce_to_new_tag_map:= [];
   let _ = eval program in let all_df = !global_env
@@ -594,7 +603,7 @@ x1 : (int - []) U (/*-[int])
 x2 : (true - []) U (/* - [true])
 x3 : ({a:int; b:true} - []) U ({b:true} - [{a:int}]) U ({a:int}-[{b:true}]) U (/* - {a:int; b:true})
 x10 : ({a:int; b:true} - []) U ({b:true} - [{a:int}]) U ({a:int}-[{b:true}]) U (/* - {a:int; b:true})
-Nonce of x3 and x10 should be the same. 
+Nonce of x3 and x10 should be the same.
  *)
 let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x2", True);
@@ -603,7 +612,6 @@ let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x7", Match (Ident "x3", [(PRecord [(Lab "b", PTrue)],[Clause (Ident "x8", Int 4)]);(PStar,[Clause (Ident "x9", Int 5)])]));
            Clause (Ident "x10", Var (Ident "x3"))];;
 let res2 = type_inference in2;;
-!old_nonce_to_new_tag_map;;
 
 (*
 x1 = 1
@@ -626,3 +634,82 @@ let in3 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x6", Match (Ident "x2", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x7", Int 4)]);
                                                    (PStar, [Clause (Ident "x8", Int 5)])]))];;
 let res3 = type_inference in3;;
+
+(*
+Simplified Master Example part 1.
+(Since current version doesn't support UNK, I'm using 2 separate match to simulate it. )
+Problem with duplicate
+
+x1 = {}
+x2 = 3
+x3 = {c:x1; d:x2}
+x4 = match x3 with
+      | {d:int} -> x5 = 1
+      | {c:int; d:* } -> x6 = 2
+      | {d:*} -> x7 = 3
+      | {e:*} -> x8 = 4
+      | {a:*} -> x9 = 5
+      | int -> x10 = 6
+      | * -> x11 = 7
+x12 = match x3 with
+      | {q: *} -> x13 = 8
+      | * -> x14 = 9
+
+res:
+x1: * U (int - [])
+x2: (int - []) U (/* - [int])
+x3: ({d:int; q:*} - []) U ({d:int} - [{q:*}])
+    U ({c:int; d:*; q:*} - [{d:int}]) U ({c:int; d:*} - [{d:int}; {q:*}])
+    U ({d:*; q:*} - [{d:int}; {c:int; d:*}]) U ({d:*} - [{d:int}; {c:int; d:*};{q:*}])
+    U ({e:*; q:*} - [{d:*}]) U ({e:*} - [{d:*}; {q:*}])
+    U ({a:*; q:*} - [{d:*}; {e:*}]) U ({a:*} - [{d:*}; {e:*}; {q:*})
+    U (int - [])
+    U ({q:*} - [{d:*}; {e:*}; {a:*}]) U (/* - [{d:*}; {e:*}; {a:*}; int; {q:*}])
+ *)
+
+let in4 = [Clause (Ident "x1", Record []);
+           Clause (Ident "x2", Int 3);
+           Clause (Ident "x3", Record [(Lab "c", Ident "x1");(Lab "d", Ident "x2")]);
+           Clause (Ident "x4", Match (Ident "x3",
+                                      [(PRecord [(Lab "d", PInt)], [Clause (Ident "x5", Int 1)]);
+                                       (PRecord [(Lab "c", PInt); (Lab "d", PStar)], [Clause (Ident "x6", Int 2)]);
+                                       (PRecord [(Lab "d", PStar)], [Clause (Ident "x7", Int 3)]);
+                                       (PRecord [(Lab "e", PStar)], [Clause (Ident "x8", Int 4)]);
+                                       (PRecord [(Lab "a", PStar)], [Clause (Ident "x9", Int 5)]);
+                                       (PInt, [Clause (Ident "x10", Int 6)]);
+                                       (PStar, [Clause (Ident "x11", Int 7)])]));
+           Clause (Ident "12", Match (Ident "x3",
+                                      [(PRecord [(Lab "q", PStar)], [Clause (Ident "x13", Int 8)]);
+                                       (PStar, [Clause (Ident "x14", Int 9)])]))];;
+let res4 = type_inference in4;;
+
+(* let rec get_ident res x =
+  match res with
+  | (Ident x1, tag)::tl -> if x = x1 then tag else get_ident tl x
+  | _ ->[];;
+
+get_ident res4 "x3";; *)
+
+ (*
+
+ x1 = {}
+ x2 = 3
+ x3 = {c:x1; d:x2}
+ x4 = match x3 with
+       | {c:int; d:* } -> x5 = 1
+       | {d:*} -> x6 = 2
+       | * -> x7 = 3
+
+ res:
+ x1: (int - []) U (/*-[int])
+ x2: *
+ x3: ({c:int;d:*} - []) U ({d:*} - [{c:int; d:*}]) U (/* - [{d:*}])
+  *)
+
+let in5 = [Clause (Ident "x1", Record []);
+           Clause (Ident "x2", Int 3);
+           Clause (Ident "x3", Record [(Lab "c", Ident "x1");(Lab "d", Ident "x2")]);
+           Clause (Ident "x4", Match (Ident "x3", [(PRecord [(Lab "c", PInt); (Lab "d", PStar)],[Clause (Ident "x5", Int 1)]);
+                                                   (PRecord [(Lab "d", PStar)], [Clause (Ident "x6", Int 2)]);
+                                                   (PStar, [Clause (Ident "x7", Int 3)])]))];;
+let res5 = type_inference in5;;
