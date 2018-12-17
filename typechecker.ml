@@ -20,51 +20,67 @@ let rec find_tau typedec x =
   | (Ident x1, Tau tau)::tl -> if x = x1 then tau else find_tau tl x
   | _ -> raise CannotFindTau;;
 
+  let rec is_subtype_bt (bt1:bt) (bt2:bt) =
+    (match (bt1, bt2) with
+     | (_ , LStar) -> true
+     | (LInt, LInt) -> true
+     | (LFalse, LFalse) -> true
+     | (LTrue, LTrue) -> true
+     | (LFun, LFun) -> true
+     | (LRecord l1, LRecord l2) ->
+       let rec iterate_record l1 e2 =
+         match (l1,e2) with
+         | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
+         | _ -> false
+       in (let rec check_record l1 l2 =
+             match l2 with
+             | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
+             | _ -> true
+           in check_record l1 l2)
+     | _ -> false);;
+
+  let rec is_subtype_t (t1:t) (t2:t) =
+    (match (t1, t2) with
+    | (T (bt1, neg1), T (bt2, neg2)) ->
+      let rec iterate_neg neg1 bt2 =
+        match neg1 with
+        | bt1::tl -> if is_subtype_bt bt2 bt1 then true else iterate_neg tl bt2
+        | _ -> false
+      in
+      let rec check_neg neg1 neg2 =
+        match neg2 with
+        | bt2::tl -> if iterate_neg neg1 bt2 then check_neg neg1 tl else false
+        | _ -> true
+      in if is_subtype_bt bt1 bt2 then check_neg neg1 neg2 else false);;
+
+  (* whether t1 is subtype of t2, t1 and t2 are both tau type *)
+  let rec is_subtype tau1 tau2 =
+    let rec iterate_tau2 t1 tau2 =
+      match tau2 with
+      | (t2, i2)::tl -> if (is_subtype_t t1 t2) then true else iterate_tau2 t1 tl
+      | _ -> false
+    in
+    let rec iterate_tau1 tau1 tau2 =
+      match tau1 with
+      | (t1, i1)::tl -> if iterate_tau2 t1 tau2 then is_subtype tl tau2 else false
+      | _ -> true
+    in iterate_tau1 tau1 tau2;;
+
 (* Atomic typed *)
 (* should we include OrVals?
    should we include false/true for and/or/not? *)
 let rec atomic_typed (program:tagged_expr) =
   match program with
-  | TaggedClause (Ident x, Tau tau, Int i)::tl ->
-    (match tau with
-     | [(T (LInt, []), Nonce nc)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, True)::tl ->
-    (match tau with
-     | [(T (LTrue, []), Nonce nc)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, False)::tl ->
-    (match tau with
-     | [(T (LFalse, []), Nonce nc)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, TaggedFunction (x1, e1))::tl ->
-    (match tau with
-     | [(T (LFun, []), Nonce nc)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, Equals (x1, x2))::tl ->
-    (match tau with
-     | [(T (LTrue, []), Nonce nc);(T (LFalse, []), Nonce nc2)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, Plus (x1, x2))::tl ->
-    (match tau with
-     | [(T (LInt, []), Nonce nc)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, Minus (x1, x2))::tl ->
-    (match tau with
-     | [(T (LInt, []), Nonce nc)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, And (x1, x2))::tl ->
-    (match tau with
-     | [(T (LTrue, []), Nonce nc);(T (LFalse, []), Nonce nc2)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, Or (x1, x2))::tl ->
-    (match tau with
-     | [(T (LTrue, []), Nonce nc);(T (LFalse, []), Nonce nc2)] -> atomic_typed tl
-     | _ -> false)
-  | TaggedClause (Ident x, Tau tau, Not x1)::tl ->
-    (match tau with
-     | [(T (LTrue, []), Nonce nc);(T (LFalse, []), Nonce nc2)] -> atomic_typed tl
-     | _ -> false)
+  | TaggedClause (Ident x, Tau tau, Int i)::tl -> is_subtype [(T (LInt, []),Nonce 0)] tau
+  | TaggedClause (Ident x, Tau tau, True)::tl -> is_subtype [(T (LTrue, []),Nonce 0)] tau
+  | TaggedClause (Ident x, Tau tau, False)::tl -> is_subtype [(T (LFalse, []),Nonce 0)] tau
+  | TaggedClause (Ident x, Tau tau, TaggedFunction (x1, e1))::tl -> is_subtype [(T (LFun, []),Nonce 0)] tau
+  | TaggedClause (Ident x, Tau tau, Equals (x1, x2))::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
+  | TaggedClause (Ident x, Tau tau, Plus (x1, x2))::tl -> is_subtype [(T (LInt, []),Nonce 0)] tau
+  | TaggedClause (Ident x, Tau tau, Minus (x1, x2))::tl -> is_subtype [(T (LInt, []),Nonce 0)] tau
+  | TaggedClause (Ident x, Tau tau, And (x1, x2))::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
+  | TaggedClause (Ident x, Tau tau, Or (x1, x2))::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
+  | TaggedClause (Ident x, Tau tau, Not x1)::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
   | TaggedClause (Ident x, Tau tau, TaggedMatch (x1, patterns))::tl ->
     (let rec check_all_patterns patterns =
        match patterns with
@@ -74,55 +90,10 @@ let rec atomic_typed (program:tagged_expr) =
   | _ -> true;;
 
 (* Subtype soundness *)
-let rec is_subtype_bt (bt1:bt) (bt2:bt) =
-  (match (bt1, bt2) with
-   | (_ , LStar) -> true
-   | (LInt, LInt) -> true
-   | (LFalse, LFalse) -> true
-   | (LTrue, LTrue) -> true
-   | (LFun, LFun) -> true
-   | (LRecord l1, LRecord l2) ->
-     let rec iterate_record l1 e2 =
-       match (l1,e2) with
-       | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
-       | _ -> false
-     in (let rec check_record l1 l2 =
-           match l2 with
-           | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
-           | _ -> true in check_record l1 l2)
-   | _ -> false);;
-
-let rec is_subtype_t (t1:t) (t2:t) =
-  (match (t1, t2) with
-  | (T (bt1, neg1), T (bt2, neg2)) ->
-    let rec iterate_neg neg1 bt2 =
-      match neg1 with
-      | bt1::tl -> if is_subtype_bt bt2 bt1 then true else iterate_neg tl bt2
-      | _ -> false
-    in
-    let rec check_neg neg1 neg2 =
-      match neg2 with
-      | bt2::tl -> if iterate_neg neg1 bt2 then check_neg neg1 tl else false
-      | _ -> true
-    in if is_subtype_bt bt1 bt2 then check_neg neg1 neg2 else false);;
-
-(* whether t1 is subtype of t2, t1 and t2 are both tau type *)
-let rec is_subtype tau1 tau2 =
-  let rec iterate_tau2 t1 tau2 =
-    match tau2 with
-    | (t2, i2)::tl -> if (is_subtype_t t1 t2) then true else iterate_tau2 t1 tl
-    | _ -> false
-  in
-  let rec iterate_tau1 tau1 tau2 =
-    match tau1 with
-    | (t1, i1)::tl -> if iterate_tau2 t1 tau2 then is_subtype tl tau2 else false
-    | _ -> true
-  in iterate_tau1 tau1 tau2;;
-
 let rec sound_subtype typedec (df:env) =
   match df with
   | (Ident x1, Var(Ident x2))::tl -> if (is_subtype (find_tau typedec x2) (find_tau typedec x1)) then sound_subtype typedec tl else false
-  | (Ident x1, b)::tl -> sound_subtype typedec tl
+  | (Ident x1, b)::tl -> raise WrongFormatOfDataFlow
   | _ -> true;;
 
 (* Record Soundness *)
@@ -227,20 +198,14 @@ let rec tb_pattern_not_match bt pattern =
   | (LRecord lr, _) -> true
   | (LEmpty, _) -> false;;
 
-let rec t_pattern_match bt neg pattern =
-  let rec iterate_neg neg pattern =
-    match neg with
-    | nbt::tl -> if tb_pattern_not_match nbt pattern then iterate_neg tl pattern else false
-    | _ -> true
-  in tb_pattern_match bt pattern && iterate_neg neg pattern;;
-
+(* Change it back to t_pattern_match bt neg p! *)
 let rec pattern_complete typedec (program:tagged_expr) =
   let rec pattern_cover tau patterns =
     (match tau with
     | (T (bt, neg), Nonce nc)::tl ->
       let rec iterate_patterns patterns pat_ind=
         match patterns with
-        | (p,e)::ttll -> if t_pattern_match bt neg p then pat_ind else iterate_patterns ttll (pat_ind+1)
+        | (p,e)::ttll -> if tb_pattern_match bt p then pat_ind else iterate_patterns ttll (pat_ind+1)
         | _ -> 0
       in let cur_match = iterate_patterns patterns 1
       in let (tail_match, delta) = pattern_cover tl patterns
@@ -256,11 +221,11 @@ let rec pattern_complete typedec (program:tagged_expr) =
 
 (* typechecking, return true/false, rou and delta *)
 let typecheck (program:tagged_expr) =
-  let (_, global) = eval (untag_program program) in
+  let (_, df) = eval (untag_program program) in
   let typedec = get_all_typedec program in
   let (recordsound, rou) = (record_soundness typedec program) in
   let (patterncomplete, delta) = (pattern_complete typedec program) in
-  ((atomic_typed program) && (sound_subtype typedec !global) && recordsound && patterncomplete,rou, delta);;
+  ((atomic_typed program) && (sound_subtype typedec !df) && recordsound && patterncomplete,rou, delta);;
 
 (*
 x1:Int = 1
@@ -268,7 +233,7 @@ x2:Int = 2
 x3:Int = x1+x2
 
 should return 3
-global_env = {x1->1, x2->2, x3->3}
+df = {}
 sound = true
 rou = []
 delta = []
@@ -284,7 +249,7 @@ x2:False = False
 x3:[True;False] = x1 && x2
 
 should return False
-global_env = {x1->True, x2->False, x3->False}
+df = {}
 sound = True
 rou = []
 delta = []
@@ -299,7 +264,7 @@ x1:Int = 1
 x2:Int = x1
 
 should return 1
-gloval_env = {x1->1, x2->1, x2->x1}
+df = {x2->x1}
 sound = true
 rou = []
 delta = []
@@ -316,7 +281,7 @@ x4 :[(LInt-{}, Nonce 4)] = Match x3 with
       | {PRecord [a:PInt]} -> x5:LInt = Int 3
 
 should return 3
-global_env = {x1->1, x2->True, x3->Closure({a:x1; b:x2}, {x1->1;x2->True}); x4-> 3; x5->3; x4->x5}
+df = {x4->x5}
 sound = true
 rou:[(x3, [(1,2)->3])]
 delta: [(x4, [(3->1)])]
@@ -392,7 +357,7 @@ x4 :[(LInt-{}, Nonce 9)] = Match x3 with
       | {PRecord [a:PTrue]} -> x6:[(LInt-{}, Nonce 11)] = Int 4
 
 should return 3
-global_env = {x1->1, x2->True, x3->Closure({a:x1; b:x2}, {x1->1;x2->True}); x4-> 4; x6-> 4; x4->x6}
+df = {x4->x6}
 sound = false
 rou:[(x3, [(1,3)->5; (1,4)->6; (2,3)->7; (2,4)->8])]
 delta: [(x4, [5->1;6->1; 7->2; 8->2])]
@@ -417,7 +382,7 @@ x4 :[(LInt-{}, Nonce 4)] = Match x3 with
       | {PRecord [a:PInt]} -> x5:LInt = Int 3
 
 should return 3
-global_env = {x1->1, x2->True, x3->Closure({a:x1; b:x2}, {x1->1;x2->True}); x4-> 3; x5->3; x4->x5}
+df = {x4->x5}
 sound = false
 rou:[(x3, [(1,2)->3])]
 delta: [(x4, [(3->1)])]

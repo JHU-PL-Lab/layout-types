@@ -232,10 +232,10 @@ let has_projected tau projected_nonces=
 
 (* Backward propagation *)
 let backward_propagate_wrapper all_df tags record_var =
-  let rec is_record x1 record_var =
-    match record_var with
-    | (Ident x2)::tl -> if x1 = x2 then true else is_record x1 tl
-    | _ -> false
+  let rec find_record x record_var =
+       match record_var with
+       | (Ident x1, r)::tl -> if x = x1 then r else find_record x tl
+       | _ -> []
   (* backward propagate x with type t using dataflow df
      propagates under 2 condition:
       1. dataflow
@@ -243,20 +243,19 @@ let backward_propagate_wrapper all_df tags record_var =
   in let rec backward_propagate df x t =
     (match df with
       | (Ident x1, Var (Ident x2))::tl -> if x1 = x && not (exists_tag tags x2 t)then (backward_propagate all_df x2 t)@(backward_propagate tl x t) else backward_propagate tl x t
-      | (Ident x1, Closure(Record r, env))::tl ->
-        (* Only continues to propagate if the variable is assigned a record in the program and the tag has not been projected before *)
-        (if x1 = x && is_record x1 record_var && not (has_projected t (!projected_record_nonces)) then
-           (let rec propagate_all all_fields =
-              (match all_fields with
-               | (xx, tt)::tl -> (backward_propagate all_df xx tt)@(propagate_all tl)
-               | _ -> [])
-           in propagate_all (extract_fields r t))
-         else []) @(backward_propagate tl x t)
-      | hd::tl -> backward_propagate tl x t
+      | hd::tl -> raise WrongFormatOfDataFlow
       | _ ->if (exists_tag tags x t) then [] else [(Ident x, t)])
+  in let rec propagate_all_fields all_fields =
+       (match all_fields with
+        | (xx, tt)::tl -> (backward_propagate all_df xx tt)@(propagate_all_fields tl)
+        | _ -> [])
   in let rec iterate_tags tags =
        match tags with
-       | (Ident x, t)::tl -> (backward_propagate all_df x t)@(iterate_tags tl)
+       (* Only continues to propagate if the variable is assigned a record in the program and the tag has not been projected before *)
+       | (Ident x, t)::tl ->
+         (if not (has_projected t (!projected_record_nonces))
+          then propagate_all_fields (extract_fields (find_record x record_var) t)else [])
+         @(backward_propagate all_df x t)@(iterate_tags tl)
        | _ -> []
   in iterate_tags tags;;
 
@@ -268,7 +267,7 @@ let forward_propagate_wrapper all_df tags =
   let rec forward_propagate x t df =
      match df with
      | (Ident x1, Var (Ident x2))::tl -> if x2 = x && not (exists_tag tags x1 t)then (forward_propagate x1 t all_df)@(forward_propagate x t tl) else forward_propagate x t tl
-     | hd::tl -> forward_propagate x t tl
+     | hd::tl -> raise WrongFormatOfDataFlow
      | _ -> if (exists_tag tags x t) then [] else [(Ident x, t)]
    in let rec iterate_tags tags =
         match tags with
@@ -340,12 +339,15 @@ let rec reform_tag tags (program:expr) =
    2. projection * vs empty
    3. overlap in final result
    4. Remove empty field during intersection
-   5. Example of two variables flow into the same one. *)
+   5. Example of two variables flow into the same one.
+   6. Operands for atomic typing
+   7. Deleting tags in big-step evaluation*)
 
 let rec type_inference (program: expr) =
   fresh_nonce := 0; projected_record_nonces := []; old_nonce_to_new_tag_map:= [];
-  let _ = eval program in let all_df = !global_env
+  let _,all_df = eval program
   in let rec get_match_tags x (program: expr) =
+       Printf.printf "get_match_tags: %s\n" x;
     match program with
     | Clause (Ident xx, Match (Ident x1, pa))::tl ->
       if xx=x then [(Ident x1, canonicalize_tau (pToTau pa))]
@@ -365,7 +367,7 @@ let rec type_inference (program: expr) =
     | _ -> []
   in let rec get_record_var (program:expr) =
     match program with
-    | Clause (Ident x, Record r)::tl -> (Ident x)::(get_record_var tl)
+    | Clause (Ident x, Record r)::tl -> (Ident x, r)::(get_record_var tl)
     | Clause (Ident x, Function (x1,e))::tl -> (get_record_var e)@(get_record_var tl)
     | Clause (Ident x, Match (x1, pa))::tl ->
       let rec iterate_pattern pa =
@@ -377,22 +379,23 @@ let rec type_inference (program: expr) =
     | _ -> []
   in let rec get_all_match df =
        match df with
-       | (Ident x, Var (Ident x2))::tl -> (get_match_tags x program)@(get_all_match tl)
-       | hd::tl -> get_all_match tl
+       | (Ident x, Var (Ident x2))::tl -> Printf.printf "%s\n" x;(get_match_tags x program)@(get_all_match tl)
+       | hd::tl -> raise WrongFormatOfDataFlow
        | _ -> []
   in let rec iterate_backward_forward tags record_var =
-       (let backward = backward_propagate_wrapper all_df tags record_var
-        in let forward = forward_propagate_wrapper all_df (tags@backward)
+       (let backward = backward_propagate_wrapper !all_df tags record_var
+        in let forward = forward_propagate_wrapper !all_df (tags@backward)
         in match (forward@backward) with
         | [] -> tags
         | _ -> iterate_backward_forward (tags@forward@backward) record_var)
-in reform_tag (iterate_backward_forward (get_all_match all_df) (get_record_var program)) program;;
+  in reform_tag (iterate_backward_forward (get_all_match (!all_df)) (get_record_var program)) program;;
 (* in (iterate_backward_forward (get_all_match all_df) (get_record_var program));; *)
+  (* in (get_all_match all_df), (get_record_var program);; *)
 
 (*
   x0 = 1
   x1 = x0;
-  x2 = 2;
+  x2 = true;
   x3 = {a:x1, b:x2}
   x4 = 3
   x5 = {c:x3, d: x4}
@@ -410,14 +413,14 @@ x5 : ({c:{a:int; b:true}} - []) U (/* - [{c:{a:int; b:true}}])
 
 let in1 = [ Clause (Ident "x0", Int 1);
             Clause (Ident "x1", Var (Ident "x0"));
-           Clause (Ident "x2", Int 2);
+           Clause (Ident "x2", True);
            Clause (Ident "x3", Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
            Clause (Ident "x4", Int 3);
            Clause (Ident "x5", Record [(Lab "c", Ident "x3"); (Lab "d", Ident "x4")]);
            Clause (Ident "x6", Match (Ident "x5", [(PRecord [(Lab "c", PRecord [(Lab "a", PInt); (Lab "b", PTrue)])], [Clause (Ident "x7", Int 7)]);
                                                    (PStar, [Clause (Ident "x8", Int 8)])]))];;
-let res = type_inference in1;;
-
+let res1 = type_inference in1;;
+let (sound1, rou1, delta1) = typecheck (tag_program in1 res1);;
 (* Test whether x10 and x3 have same nonce
 x1 = 1
 x2 = true
@@ -444,6 +447,7 @@ let in2 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x7", Match (Ident "x3", [(PRecord [(Lab "b", PTrue)],[Clause (Ident "x8", Int 4)]);(PStar,[Clause (Ident "x9", Int 5)])]));
            Clause (Ident "x10", Var (Ident "x3"))];;
 let res2 = type_inference in2;;
+let (sound2, rou2, delta2) = typecheck (tag_program in2 res2);;
 
 (* Test intersection of same tags
 x1 = 1
@@ -466,6 +470,7 @@ let in3 = [Clause (Ident "x1", Int 1);
            Clause (Ident "x6", Match (Ident "x2", [(PRecord [(Lab "a", PInt)], [Clause (Ident "x7", Int 4)]);
                                                    (PStar, [Clause (Ident "x8", Int 5)])]))];;
 let res3 = type_inference in3;;
+let (sound3, rou3, delta3) = typecheck (tag_program in3 res3);;
 
 (*
 Simplified Master Example part 1.
@@ -514,13 +519,21 @@ let in4 = [Clause (Ident "x1", Record []);
                                       [(PRecord [(Lab "q", PStar)], [Clause (Ident "x13", Int 8)]);
                                        (PStar, [Clause (Ident "x14", Int 9)])]))];;
 let res4 = type_inference in4;;
+let tagged4 = tag_program in4 res4;;
+let atomic = atomic_typed tagged4;;
+let (_, df4) = eval in4;;
+let typedec = get_all_typedec tagged4;;
+sound_subtype typedec df4;;
+let (recordsound4, rou4) = (record_soundness typedec tagged4);;
+(* let patterncomplete, delta = (pattern_complete typedec tagged1);; *)
+let (sound4, rou4, delta4) = typecheck (tag_program in4 res4);;
 
-let rec get_ident res x =
+(* let rec get_ident res x =
   match res with
   | (Ident x1, tag)::tl -> if x = x1 then tag else get_ident tl x
   | _ ->[];;
 
-get_ident res4 "x3";;
+get_ident res4 "x3";; *)
 
  (*
 
@@ -545,6 +558,7 @@ let in5 = [Clause (Ident "x1", Record []);
                                                    (PRecord [(Lab "d", PStar)], [Clause (Ident "x6", Int 2)]);
                                                    (PStar, [Clause (Ident "x7", Int 3)])]))];;
 let res5 = type_inference in5;;
+let (sound5, rou5, delta5) = typecheck (tag_program in5 res5);;
 
 (* Test intersection of records
 x1 = 1
@@ -583,8 +597,44 @@ let in6 = [Clause (Ident "x1", Int 1);
                                                     (PRecord [(Lab "c", PRecord [(Lab "b", PTrue)]); (Lab "d", PFalse)], [Clause (Ident "x12", Int 5)]);
                                                     (PStar, [Clause (Ident "x13", Int 6)])]))];;
 let res6 = type_inference in6;;
-get_ident res6 "x5";;
+let (sound6, rou6, delta6) = typecheck (tag_program in6 res6);;
 
+(*
+Simplified test 4.
 
+x1 = {}
+x2 = 3
+x3 = {c:x1; d:x2}
+x4 = match x3 with
+      | {d:int} -> x5 = 1
+      | {c:int; d:* } -> x6 = 2
+      | {d:*} -> x7 = 3
+      | * -> x11 = 7
+x12 = match x3 with
+      | {q: *} -> x13 = 8
+      | * -> x14 = 9
+
+res:
+x1: * U (int - [])
+x2: (int - []) U (/* - [int])
+x3: ({d:int; q:*} - []) U ({d:int} - [{q:*}])
+    U ({c:int; d:*; q:*} - [{d:int}]) U ({c:int; d:*} - [{d:int}; {q:*}])
+    U ({d:*; q:*} - [{d:int}; {c:int; d:*}]) U ({d:*} - [{d:int}; {c:int; d:*};{q:*}])
+    U ({q:*} - [{d:*};]) U (/* - [{d:*}; {q:*}])
+ *)
+
+let in7 = [Clause (Ident "x1", Record []);
+           Clause (Ident "x2", Int 3);
+           Clause (Ident "x3", Record [(Lab "c", Ident "x1");(Lab "d", Ident "x2")]);
+           Clause (Ident "x4", Match (Ident "x3",
+                                      [(PRecord [(Lab "d", PInt)], [Clause (Ident "x5", Int 1)]);
+                                       (PRecord [(Lab "c", PInt); (Lab "d", PStar)], [Clause (Ident "x6", Int 2)]);
+                                       (PRecord [(Lab "d", PStar)], [Clause (Ident "x7", Int 3)]);
+                                       (PStar, [Clause (Ident "x8", Int 7)])]));
+           Clause (Ident "9", Match (Ident "x3",
+                                      [(PRecord [(Lab "q", PStar)], [Clause (Ident "x10", Int 8)]);
+                                       (PStar, [Clause (Ident "x11", Int 9)])]))];;
+let res7 = type_inference in7;;
+let (sound7, rou7, delta7) = typecheck (tag_program in7 res7);;
 (* Test iteration of backward/forward
  *)

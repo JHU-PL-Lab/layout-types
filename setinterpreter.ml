@@ -4,7 +4,7 @@ exception BodyNotMatched;;
 exception ClauseNotMatched;;
 exception ForkFailed;;
 
-let global_env = ref [];;
+let dataflow = ref [];;
 
 let rec find_var x envir =
   match envir with
@@ -47,7 +47,7 @@ let rec eval_body (b:body) (ev:env) (flowto: ident)=
   | True -> True
   | False -> False
   | OrVal o -> OrVal o
-  | Var (Ident x) -> global_env := (flowto, Var (Ident x))::!global_env; find_var x ev
+  | Var (Ident x) -> dataflow := (flowto, Var (Ident x))::!dataflow; find_var x ev
   | Function (x1, e1) -> Closure (b, ev)
   | Record rc -> Closure (b, ev)
   | Plus (Ident x1, Ident x2) ->
@@ -84,19 +84,19 @@ let rec eval_body (b:body) (ev:env) (flowto: ident)=
   | Appl (Ident x1, Ident x2) ->
     (match (find_var x1 ev, find_var x2 ev) with
      | (Closure (Function (xx, ee), eevv), v) ->
-       global_env := (xx, Var (Ident x2)):: !global_env;
-       global_env := (flowto, Var (Ident (get_last_variable_from_expr ee))) :: !global_env;
+       dataflow := (xx, Var (Ident x2)):: !dataflow;
+       dataflow := (flowto, Var (Ident (get_last_variable_from_expr ee))) :: !dataflow;
        eval_clauses ee ((xx, v)::eevv)
      | _ -> Empty)
   | Proj (Ident x1, Lab l1) ->
     (match (find_var x1 ev) with
-     | Closure (Record r, eevv)-> let i = get_record_val r l1 in (global_env := (flowto, Var (Ident i))::!global_env;
+     | Closure (Record r, eevv)-> let i = get_record_val r l1 in (dataflow := (flowto, Var (Ident i))::!dataflow;
                                                                   find_var i eevv)
      | _ -> Empty)
   | Match (Ident x1, p) ->
     (let rec match_pattern x1 p =
        (match p with
-        | (pp, ee)::tl -> if (pattern_match x1 pp ev) then (global_env := (flowto, Var (Ident (get_last_variable_from_expr ee)))::!global_env;
+        | (pp, ee)::tl -> if (pattern_match x1 pp ev) then (dataflow := (flowto, Var (Ident (get_last_variable_from_expr ee)))::!dataflow;
                                                             eval_clauses ee ev)
           else match_pattern x1 tl
         | _ -> Empty)
@@ -104,25 +104,24 @@ let rec eval_body (b:body) (ev:env) (flowto: ident)=
   | _ -> raise BodyNotMatched
 and eval_clauses (clauses:expr) (ev:env)=
   match clauses with
-  | Clause (Ident x, b)::[] -> let res = eval_body b ev (Ident x) in (global_env := (Ident x, res) :: !global_env; match res with
+  | Clause (Ident x, b)::[] -> let res = eval_body b ev (Ident x) in (match res with
     | OrVal o -> OrVal o
     | _ -> OrVal [res])
   | Clause (Ident x, b)::tl ->
     let rec fork l =
       (match l with
-       | hhdd::[] -> global_env := (Ident x, hhdd) :: !global_env; eval_clauses tl ((Ident x, hhdd)::ev);
-       | hhdd::ttll -> (global_env := (Ident x, hhdd) :: !global_env;
-                        (match (eval_clauses tl ((Ident x, hhdd)::ev),fork ttll) with
+       | hhdd::[] ->  eval_clauses tl ((Ident x, hhdd)::ev);
+       | hhdd::ttll -> ((match (eval_clauses tl ((Ident x, hhdd)::ev),fork ttll) with
                          | (OrVal o1,OrVal o2) -> OrVal (o1@o2)
                          | _ -> raise ForkFailed))
        | _ -> raise ClauseNotMatched)
     in (let res = eval_body b ev (Ident x) in
         match res with
         | OrVal l -> fork l
-        | _ -> (global_env := (Ident x, res) :: !global_env; eval_clauses tl ((Ident x, res)::ev)))
+        | _ -> eval_clauses tl ((Ident x, res)::ev))
   | _ -> raise ClauseNotMatched;;
 
-let eval clauses = global_env:= [];(eval_clauses clauses [], global_env);;
+let eval clauses = dataflow:= [];(eval_clauses clauses [], dataflow);;
 
 (*
 x1 = 1 or 2
