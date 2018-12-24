@@ -7,19 +7,24 @@ type t =  T of bt * (bt list);;
 type tau = Tau of (t * nonce) list;;
 
 (* Use TaggedMatch, TaggedFunction instead of Match and Function in TaggedClause and tagged_expr, which is used in typechecker.  *)
-type body = Int of int | True | False | Closure of body * env | Function of ident * expr | Record of (label * ident) list | OrVal of body list | Empty
+type body = Int of int | True | False | Closure of body * env | Function of ident * expr | Record of (label * ident) list | Amb of body list | Empty
           | Var of ident | Appl of ident * ident | Proj of ident * label
           | Plus of ident * ident | Minus of ident * ident | LessThan of ident * ident | Equals of ident * ident
           | And of ident * ident | Or of ident * ident | Not of ident
           | Match of ident * (pattern * expr) list
           | TaggedFunction of ident * tagged_expr | TaggedMatch of ident * (pattern * tagged_expr) list
+          | TaggedClosure of body * tagged_env
 and env = (ident * body) list
+and tagged_env = (ident * (body * nonce)) list
 and clause = Clause of ident * body
 and tagged_clause = TaggedClause of ident * tau * body
 and expr = clause list
 and tagged_expr = tagged_clause list
 and pattern = PRecord of (label * pattern) list | PInt | PTrue | PFalse | PFun | PStar;;
 
+exception BodyNotMatched;;
+exception ClauseNotMatched;;
+exception ForkFailed;;
 exception WrongFormatOfDataFlow;;
 
 let rec untag_program (program:tagged_expr) =

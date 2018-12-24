@@ -1,9 +1,12 @@
 open Layout;;
 open Setinterpreter;;
+open Helper;;
 
 exception CannotFindTau;;
 
 (* helper methods *)
+
+(* Get a typedec table with variable to tags mapping specified in the program, serves to lookup purposes.  *)
 let rec get_all_typedec (expr: tagged_expr) =
   match expr with
   | TaggedClause (Ident x, Tau tau, TaggedFunction (Ident x1, e1))::tl -> (Ident x, Tau tau)::(get_all_typedec tl)@(get_all_typedec e1)
@@ -15,89 +18,62 @@ let rec get_all_typedec (expr: tagged_expr) =
   | TaggedClause (Ident x, Tau tau, b)::tl -> (Ident x, Tau tau)::(get_all_typedec tl)
   | _ -> [];;
 
+(* Find the tag associated with variable x in the typedec table *)
 let rec find_tau typedec x =
   match typedec with
   | (Ident x1, Tau tau)::tl -> if x = x1 then tau else find_tau tl x
   | _ -> raise CannotFindTau;;
 
-  let rec is_subtype_bt (bt1:bt) (bt2:bt) =
-    (match (bt1, bt2) with
-     | (_ , LStar) -> true
-     | (LInt, LInt) -> true
-     | (LFalse, LFalse) -> true
-     | (LTrue, LTrue) -> true
-     | (LFun, LFun) -> true
-     | (LRecord l1, LRecord l2) ->
-       let rec iterate_record l1 e2 =
-         match (l1,e2) with
-         | ((Lab lab1, bt1)::tl,(Lab lab2, bt2)) -> if lab1 = lab2 then is_subtype_bt bt1 bt2 else iterate_record tl e2
-         | _ -> false
-       in (let rec check_record l1 l2 =
-             match l2 with
-             | e2::tl -> if iterate_record l1 e2 then check_record l1 tl else false
-             | _ -> true
-           in check_record l1 l2)
-     | _ -> false);;
-
-  let rec is_subtype_t (t1:t) (t2:t) =
-    (match (t1, t2) with
-    | (T (bt1, neg1), T (bt2, neg2)) ->
-      let rec iterate_neg neg1 bt2 =
-        match neg1 with
-        | bt1::tl -> if is_subtype_bt bt2 bt1 then true else iterate_neg tl bt2
-        | _ -> false
-      in
-      let rec check_neg neg1 neg2 =
-        match neg2 with
-        | bt2::tl -> if iterate_neg neg1 bt2 then check_neg neg1 tl else false
-        | _ -> true
-      in if is_subtype_bt bt1 bt2 then check_neg neg1 neg2 else false);;
-
-  (* whether t1 is subtype of t2, t1 and t2 are both tau type *)
-  let rec is_subtype tau1 tau2 =
-    let rec iterate_tau2 t1 tau2 =
-      match tau2 with
-      | (t2, i2)::tl -> if (is_subtype_t t1 t2) then true else iterate_tau2 t1 tl
-      | _ -> false
-    in
-    let rec iterate_tau1 tau1 tau2 =
-      match tau1 with
-      | (t1, i1)::tl -> if iterate_tau2 t1 tau2 then is_subtype tl tau2 else false
-      | _ -> true
-    in iterate_tau1 tau1 tau2;;
-
-(* Atomic typed *)
-(* should we include OrVals?
-   should we include false/true for and/or/not? *)
-let rec atomic_typed (program:tagged_expr) =
-  match program with
-  | TaggedClause (Ident x, Tau tau, Int i)::tl -> is_subtype [(T (LInt, []),Nonce 0)] tau
-  | TaggedClause (Ident x, Tau tau, True)::tl -> is_subtype [(T (LTrue, []),Nonce 0)] tau
-  | TaggedClause (Ident x, Tau tau, False)::tl -> is_subtype [(T (LFalse, []),Nonce 0)] tau
-  | TaggedClause (Ident x, Tau tau, TaggedFunction (x1, e1))::tl -> is_subtype [(T (LFun, []),Nonce 0)] tau
-  | TaggedClause (Ident x, Tau tau, Equals (x1, x2))::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
-  | TaggedClause (Ident x, Tau tau, Plus (x1, x2))::tl -> is_subtype [(T (LInt, []),Nonce 0)] tau
-  | TaggedClause (Ident x, Tau tau, Minus (x1, x2))::tl -> is_subtype [(T (LInt, []),Nonce 0)] tau
-  | TaggedClause (Ident x, Tau tau, And (x1, x2))::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
-  | TaggedClause (Ident x, Tau tau, Or (x1, x2))::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
-  | TaggedClause (Ident x, Tau tau, Not x1)::tl -> (is_subtype [(T (LTrue, []), Nonce 0)] tau) || (is_subtype [(T (LFalse, []), Nonce 0)] tau)
+(* Atomic typed
+   See commit 31a09f, Definition 1.16
+   Modified: all the "=" in the definition should is changed to <<: *)
+let rec atomic_typed (program:tagged_expr) typedec =
+  let rec exists_subtype (t:t) tau =
+    match tau with
+    | (t1, nc)::tl -> if is_subtype_t t t1 then true else exists_subtype t tl
+    | _ -> false
+  in match program with
+  | TaggedClause (Ident x, Tau tau, Int i)::tl -> exists_subtype (T (LInt,[])) tau
+  | TaggedClause (Ident x, Tau tau, True)::tl -> exists_subtype (T (LTrue,[])) tau
+  | TaggedClause (Ident x, Tau tau, False)::tl -> exists_subtype (T (LFalse,[])) tau
+  | TaggedClause (Ident x, Tau tau, TaggedFunction (x1, e1))::tl -> exists_subtype (T (LFun,[])) tau
+  | TaggedClause (Ident x, Tau tau, Equals (Ident x1, Ident x2))::tl ->((exists_subtype (T (LTrue,[])) tau) || (exists_subtype (T (LFalse,[])) tau))
+                                                                       && (exists_subtype (T (LInt,[])) (find_tau typedec x1)) && (exists_subtype (T (LInt,[])) (find_tau typedec x2))
+  | TaggedClause (Ident x, Tau tau, Plus (Ident x1, Ident x2))::tl -> (exists_subtype (T (LInt,[])) tau)
+                                                                      && (exists_subtype (T (LInt,[])) (find_tau typedec x1)) && (exists_subtype (T (LInt,[])) (find_tau typedec x2))
+  | TaggedClause (Ident x, Tau tau, Minus (Ident x1, Ident x2))::tl -> (exists_subtype (T (LInt,[])) tau)
+                                                                       && (exists_subtype (T (LInt,[])) (find_tau typedec x1)) && (exists_subtype (T (LInt,[])) (find_tau typedec x2))
+  | TaggedClause (Ident x, Tau tau, And (Ident x1, Ident x2))::tl -> ((exists_subtype (T (LTrue,[])) tau) || (exists_subtype (T (LFalse,[])) tau))
+                                                                     && (exists_subtype (T (LTrue,[])) (find_tau typedec x1) || exists_subtype (T (LFalse,[])) (find_tau typedec x1))
+                                                                     && (exists_subtype (T (LTrue,[])) (find_tau typedec x2) || exists_subtype (T (LFalse,[])) (find_tau typedec x2))
+  | TaggedClause (Ident x, Tau tau, Or (Ident x1, Ident x2))::tl -> ((exists_subtype (T (LTrue,[])) tau) || (exists_subtype (T (LFalse,[])) tau))
+                                                                    && (exists_subtype (T (LTrue,[])) (find_tau typedec x1) || exists_subtype (T (LFalse,[])) (find_tau typedec x1))
+                                                                    && (exists_subtype (T (LTrue,[])) (find_tau typedec x2) || exists_subtype (T (LFalse,[])) (find_tau typedec x2))
+  | TaggedClause (Ident x, Tau tau, Not (Ident x1))::tl -> ((exists_subtype (T (LTrue,[])) tau) || (exists_subtype (T (LFalse,[])) tau))
+                                                           && (exists_subtype (T (LTrue,[])) (find_tau typedec x1) || exists_subtype (T (LFalse,[])) (find_tau typedec x1))
   | TaggedClause (Ident x, Tau tau, TaggedMatch (x1, patterns))::tl ->
     (let rec check_all_patterns patterns =
        match patterns with
-       | (p1, e1)::ttll -> atomic_typed e1 && check_all_patterns ttll
-       | _ -> true in check_all_patterns patterns && atomic_typed tl)
-  | TaggedClause (Ident x, Tau tau, b)::tl -> atomic_typed tl
+       | (p1, e1)::ttll -> atomic_typed e1 typedec && check_all_patterns ttll
+       | _ -> true in check_all_patterns patterns && atomic_typed tl typedec)
+  | TaggedClause (Ident x, Tau tau, b)::tl -> atomic_typed tl typedec
   | _ -> true;;
 
-(* Subtype soundness *)
+(* Subtype soundness
+   See commit 31a09f, Definition 1.17 *)
 let rec sound_subtype typedec (df:env) =
   match df with
   | (Ident x1, Var(Ident x2))::tl -> if (is_subtype (find_tau typedec x2) (find_tau typedec x1)) then sound_subtype typedec tl else false
-  | (Ident x1, b)::tl -> raise WrongFormatOfDataFlow
+  | hd::tl -> raise WrongFormatOfDataFlow
   | _ -> true;;
 
-(* Record Soundness *)
+(* Record Soundness
+   See commit 31a09f, Definition 1.18
+   Returns whether the program is record sound. If so then return rou that maps
+   from the nonces of the field to the nonce of the record. *)
 let rec record_soundness typedec (program:tagged_expr) =
+  (* Combine the field tags to give the record tag
+     See commit 31a09f, Definition 1.14 *)
   let get_canonical_record_wrapper r =
     (let rec get_canonical_record r =
       match r with
@@ -111,6 +87,8 @@ let rec record_soundness typedec (program:tagged_expr) =
       | _ -> ([],[])
     in let (bt, neg) = get_canonical_record r
     in T (LRecord bt, neg)) in
+  (* Product all the tags of all fields to give all possible tags for the record
+     See commit 31a09f, Definition 1.18 Rule 1*)
   let get_field_product r typedec =
     (let rec iterate_res lab t nc res =
       match res with
@@ -125,18 +103,18 @@ let rec record_soundness typedec (program:tagged_expr) =
          | (lab, Ident x)::tl -> let res = iterate_record tl typedec in iterate_disjuncts lab (find_tau typedec x) res
          | _ -> [([],[])]
     in iterate_record r typedec) in
-  let rec iterate_tau r1 tau =
+  let rec find_matching_nonce r1 tau =
     (match tau with
-    | (t1, Nonce nc)::tl -> if is_subtype_t r1 t1 then nc else iterate_tau r1 tl
+    | (t1, Nonce nc)::tl -> if is_subtype_t r1 t1 then nc else find_matching_nonce r1 tl
     | _ -> -1) in
   (match program with
   | (TaggedClause (Ident x, Tau tau, Record r))::tl ->
     let rec iterate_product product tau =
       match product with
-      | (record, nonce_list)::tl ->let match_ind = iterate_tau (get_canonical_record_wrapper record) tau in
-        if (match_ind = -1) then (false,[])
+      | (record, nonce_list)::tl ->let match_nonce = find_matching_nonce (get_canonical_record_wrapper record) tau in
+        if (match_nonce = -1) then (false,[])
         else (let (matches, table) = iterate_product tl tau in
-              if matches = true then (true, (nonce_list, match_ind) :: table) else (false, []))
+              if matches = true then (true, (nonce_list, match_nonce) :: table) else (false, []))
       | _ ->(true, [])
     in let (matches_tl, rou_tl) = record_soundness typedec tl
     in let (matches_cur, table_cur) = iterate_product (get_field_product r typedec) tau
@@ -144,88 +122,55 @@ let rec record_soundness typedec (program:tagged_expr) =
   | hd::tl -> record_soundness typedec tl
   | _ -> (true, []));;
 
-(* Pattern Complete *)
-let rec tb_pattern_match bt pattern =
-  match (bt, pattern) with
-  | (LEmpty, _) -> true
-  | (_, PStar) -> true
-  | (LInt, PInt) -> true
-  | (LFalse, PFalse) -> true
-  | (LTrue, PTrue) -> true
-  | (LFun, PFun) -> true
-  | (LRecord lr, PRecord pr) ->
-    let rec iterate_record lr labp pa =
-      match lr with
-      | (Lab labr, btr)::tl -> if labp = labr then tb_pattern_match btr pa else iterate_record tl labp pa
-      | _ -> false
-    in let rec iterate_pattern lr pr =
-         match pr with
-         | (Lab labp, pa)::tl -> if iterate_record lr labp pa then iterate_pattern lr tl else false
-         | _ -> true
-    in iterate_pattern lr pr
-  | _ -> false;;
-
-let rec tb_pattern_not_match bt pattern =
-  match (bt, pattern) with
-  | (_, PStar) -> false
-  | (LStar, _) -> false
-  | (LInt, p) ->
-    (match p with
-     | PInt -> false
-     | _ -> true)
-  | (LTrue, p) ->
-    (match p with
-     | PTrue -> false
-     | _ -> true)
-  | (LFalse, p) ->
-    (match p with
-     | PFalse -> false
-     | _ -> true)
-  | (LFun, p) ->
-    (match p with
-     | PFun -> false
-     | _ -> true)
-  | (LRecord lr, PRecord pr) ->
-    let rec iterate_record lr labp pa=
-      match lr with
-      | (Lab labr, btr)::tl -> if labr = labp then tb_pattern_not_match btr pa else iterate_record tl labp pa
-      | _ -> false
-    in let rec iterate_pattern lr pr =
-         match pr with
-         | (Lab labp, pa)::tl -> if iterate_record lr labp pa then true else iterate_pattern lr tl
-         | _ -> false
-    in iterate_pattern lr pr
-  | (LRecord lr, _) -> true
-  | (LEmpty, _) -> false;;
-
-(* Change it back to t_pattern_match bt neg p! *)
+(* Pattern Completeness
+   See commit 31a09f, Definition 1.20, 1.21*)
 let rec pattern_complete typedec (program:tagged_expr) =
+  (* Pattern Cover
+     See commit 31a09f, Definition 1.19*)
   let rec pattern_cover tau patterns =
     (match tau with
-    | (T (bt, neg), Nonce nc)::tl ->
-      let rec iterate_patterns patterns pat_ind=
+     | (t, Nonce nc)::tl ->
+      let rec t_not_cover_previous_patterns patterns pat_ind =
+        if pat_ind = 1 then true else
+          (match patterns with
+           |(p,e)::ttll -> if t_pattern_not_match t p then t_not_cover_previous_patterns ttll (pat_ind-1) else false
+           | _ -> true)
+      in let rec t_covers_pattern patterns pat_ind all_patterns=
         match patterns with
-        | (p,e)::ttll -> if tb_pattern_match bt p then pat_ind else iterate_patterns ttll (pat_ind+1)
-        | _ -> 0
-      in let cur_match = iterate_patterns patterns 1
+        | (p,e)::ttll -> if t_pattern_match t p && t_not_cover_previous_patterns all_patterns pat_ind then pat_ind else t_covers_pattern ttll (pat_ind+1) all_patterns
+        | _ -> (-1)
+      in let cur_match = t_covers_pattern patterns 1 patterns
       in let (tail_match, delta) = pattern_cover tl patterns
-      in if (cur_match != 0) && tail_match then (true, (Nonce nc, cur_match)::delta) else (false, [])
+      in if (cur_match != (-1)) && tail_match then (true, (Nonce nc, cur_match)::delta) else (false, [])
     | _ -> (true, [])) in
   (match program with
-    | (TaggedClause (Ident x1, Tau tau, TaggedMatch (Ident x2, patterns)))::tl ->
-      let (match_cur, table_cur) = pattern_cover (find_tau typedec x2) patterns
+   | (TaggedClause (Ident x1, Tau tau, TaggedMatch (Ident x2, patterns)))::tl ->
+     let rec iterate_pattern_body patterns =
+       match patterns with
+       | (p, e)::tl ->
+         let (match_cur_pattern, delta_cur_pattern) = pattern_complete typedec e
+         in let (match_pattern_tail, delta_pattern_tail) = iterate_pattern_body tl
+         in if match_cur_pattern && match_pattern_tail then (true, delta_cur_pattern@delta_pattern_tail) else (false, [])
+       | _ -> (true, [])
+      in let (match_cur, table_cur) = pattern_cover (find_tau typedec x2) patterns
       in let (match_tail, delta_tail) = pattern_complete typedec tl
-      in if match_cur && match_tail then (true, (Ident x1, table_cur) :: delta_tail) else (false, [])
+      in let (match_pattern_body, delta_pattern_body) = iterate_pattern_body patterns
+      in if match_cur && match_tail && match_pattern_body then (true, ((Ident x1, table_cur) :: delta_tail)@delta_pattern_body) else (false, [])
+    | (TaggedClause (Ident x1, Tau tau, TaggedFunction (Ident x2, e2)))::tl ->
+      let (match_func_body, delta_func_body) = pattern_complete typedec e2
+      in let (match_tail, delta_tail) = pattern_complete typedec tl
+      in if match_func_body && match_tail then (true, delta_func_body@delta_tail) else (false, [])
     | hd::tl -> pattern_complete typedec tl
     | _ -> (true,[]));;
 
-(* typechecking, return true/false, rou and delta *)
+(* Typecheck
+   See commit 31a09f, Definition 1.22*)
 let typecheck (program:tagged_expr) =
   let (_, df) = eval (untag_program program) in
   let typedec = get_all_typedec program in
   let (recordsound, rou) = (record_soundness typedec program) in
   let (patterncomplete, delta) = (pattern_complete typedec program) in
-  ((atomic_typed program) && (sound_subtype typedec !df) && recordsound && patterncomplete,rou, delta);;
+  ((atomic_typed program typedec) && (sound_subtype typedec !df) && recordsound && patterncomplete,rou, delta);;
 
 (*
 x1:Int = 1

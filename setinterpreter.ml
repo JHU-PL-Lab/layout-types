@@ -1,9 +1,5 @@
 open Layout;;
 
-exception BodyNotMatched;;
-exception ClauseNotMatched;;
-exception ForkFailed;;
-
 let dataflow = ref [];;
 
 let rec find_var x envir =
@@ -16,6 +12,8 @@ let rec get_record_val r l =
   | (Lab lab, Ident x)::tl -> if l =lab then x else get_record_val tl l
   | _ -> "No Matching Label";;
 
+(* Returns true if given environment ev, the variable x matches the pattern p
+   See commit 31a09f, Definition 1.1*)
 let rec pattern_match x (p:pattern) (ev:env) =
   match (find_var x ev, p) with
   | (Int n, PInt) -> true
@@ -35,18 +33,22 @@ let rec pattern_match x (p:pattern) (ev:env) =
   | (_, PStar) -> true
   |  _ -> false;;
 
+(* Get the last variable in the list e
+   Used to get dataflow *)
 let rec get_last_variable_from_expr e =
   match e with
   | Clause (Ident x, b)::[] -> x
   | hd::tl -> get_last_variable_from_expr tl
   | _ -> raise ClauseNotMatched;;
 
+(* Interpreter, also collect data flow
+   See commit 31a09f, Definition 2.1 and Figure 4 *)
 let rec eval_body (b:body) (ev:env) (flowto: ident)=
   match b with
   | Int n -> Int n
   | True -> True
   | False -> False
-  | OrVal o -> OrVal o
+  | Amb a -> Amb a
   | Var (Ident x) -> dataflow := (flowto, Var (Ident x))::!dataflow; find_var x ev
   | Function (x1, e1) -> Closure (b, ev)
   | Record rc -> Closure (b, ev)
@@ -105,19 +107,19 @@ let rec eval_body (b:body) (ev:env) (flowto: ident)=
 and eval_clauses (clauses:expr) (ev:env)=
   match clauses with
   | Clause (Ident x, b)::[] -> let res = eval_body b ev (Ident x) in (match res with
-    | OrVal o -> OrVal o
-    | _ -> OrVal [res])
+    | Amb a -> Amb a
+    | _ -> Amb [res])
   | Clause (Ident x, b)::tl ->
     let rec fork l =
       (match l with
        | hhdd::[] ->  eval_clauses tl ((Ident x, hhdd)::ev);
        | hhdd::ttll -> ((match (eval_clauses tl ((Ident x, hhdd)::ev),fork ttll) with
-                         | (OrVal o1,OrVal o2) -> OrVal (o1@o2)
+                         | (Amb a1,Amb a2) -> Amb (a1@a2)
                          | _ -> raise ForkFailed))
        | _ -> raise ClauseNotMatched)
     in (let res = eval_body b ev (Ident x) in
         match res with
-        | OrVal l -> fork l
+        | Amb l -> fork l
         | _ -> eval_clauses tl ((Ident x, res)::ev))
   | _ -> raise ClauseNotMatched;;
 
@@ -130,7 +132,7 @@ x3 = x1+x2
 should return 3 or 4
 global_env = {x1->1, x2->2, x3->3}
 *)
-let in1 = [Clause (Ident "x1", OrVal [Int 1; Int 2]); Clause (Ident "x2", Int 2); Clause (Ident "x3", Plus (Ident "x1", Ident "x2"))];;
+let in1 = [Clause (Ident "x1", Amb [Int 1; Int 2]); Clause (Ident "x2", Int 2); Clause (Ident "x3", Plus (Ident "x1", Ident "x2"))];;
 let out1 = eval in1;;
 
 (*
@@ -140,13 +142,13 @@ return : false
 global_env = {x1 -> 1 or true, x2 -> false}
  *)
 
-let in11 = [Clause (Ident "x1", OrVal [Int 1; True]); Clause (Ident "x2", Not (Ident "x1"))];;
+let in11 = [Clause (Ident "x1", Amb [Int 1; True]); Clause (Ident "x2", Not (Ident "x1"))];;
 let out11 = eval in11;;
 
-let in12 = [Clause (Ident "x1", OrVal [Int 1; True]); Clause (Ident "x2", OrVal [True; False]); Clause (Ident "x3", Or(Ident "x1", Ident "x2"))];;
+let in12 = [Clause (Ident "x1", Amb [Int 1; True]); Clause (Ident "x2", Amb [True; False]); Clause (Ident "x3", Or(Ident "x1", Ident "x2"))];;
 let out12 = eval in12;;
 
-let in13 = [Clause (Ident "x1", OrVal [Int 1; True]); Clause (Ident "x2", OrVal [Int 1; Int 2]); Clause (Ident "x3", Equals(Ident "x1", Ident "x2"))];;
+let in13 = [Clause (Ident "x1", Amb [Int 1; True]); Clause (Ident "x2", Amb [Int 1; Int 2]); Clause (Ident "x3", Equals(Ident "x1", Ident "x2"))];;
 let out13 = eval in13;;
 
 (*
@@ -185,7 +187,7 @@ global_env = {x1->1, x3->2, x2->2}
 let in4 = [Clause(Ident "x1", Int 1); Clause (Ident "x2", Match (Ident "x1", [(PInt, [Clause (Ident "x3", Int 2)])]))];;
 let out4 = eval in4;;
 
-let in41 = [Clause(Ident "x1", OrVal [Int 1; Int 2]); Clause (Ident "x2", Match (Ident "x1", [(PInt, [Clause (Ident "x3", Int 2)])]))];;
+let in41 = [Clause(Ident "x1", Amb [Int 1; Int 2]); Clause (Ident "x2", Match (Ident "x1", [(PInt, [Clause (Ident "x3", Int 2)])]))];;
 let out41 = eval in41;;
 
 (*
@@ -224,8 +226,8 @@ x6 = Match x5 with
 should return 4
 global_env = {}
 *)
-let in61 = [Clause (Ident "x1", OrVal [Int 1; Int 2]);
-            Clause (Ident "x2", OrVal [Int 3; False]);
+let in61 = [Clause (Ident "x1", Amb [Int 1; Int 2]);
+            Clause (Ident "x2", Amb [Int 3; False]);
             Clause (Ident "x3", Record [(Lab "a", Ident "x1"); (Lab "b", Ident "x2")]);
             Clause (Ident "x4", True);
             Clause (Ident "x5", Record [(Lab "c", Ident "x3"); (Lab "d", Ident "x4")]);
@@ -248,8 +250,8 @@ x7 = x6 x5
 let in62 = [Clause (Ident "x1", Function (Ident "x",
                                           [Clause (Ident "x2", Function (Ident "y",
                                                                          [Clause (Ident "x3", Plus(Ident "x", Ident "y"))]))]));
-            Clause (Ident "x4", OrVal [Int 1; Int 2]);
-            Clause (Ident "x5", OrVal [Int 10; Int 20]);
+            Clause (Ident "x4", Amb [Int 1; Int 2]);
+            Clause (Ident "x5", Amb [Int 10; Int 20]);
             Clause (Ident "x6", Appl (Ident "x1", Ident "x4"));
             Clause (Ident "x7", Appl (Ident "x6", Ident "x5"))];;
 let out62 = eval in62;;
