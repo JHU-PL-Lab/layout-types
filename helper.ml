@@ -27,7 +27,7 @@ let rec conflict (bt1:bt) (bt2:bt) =
            | (Lab lab2, t2)::tl -> if (conflict t2 (find_lab_in_r1 r1 lab2)) then true else iterate_r2 tl
            | _ -> false
       in iterate_r2 r2)
-   | (LRecord r1, _ ) -> true);;
+   | (LRecord _, _ ) -> true);;
 
 
 (* Returns true if bt1 is a subtype of bt2, false otherwise.
@@ -54,7 +54,7 @@ let rec is_subtype_bt (bt1:bt) (bt2:bt) =
 
 (* Returns true it t1 is a subtype of t2, false otherwise.
    See commit 31a09f, Definition 1.10 *)
-let rec is_subtype_t (t1:t) (t2:t) =
+let is_subtype_t (t1:t) (t2:t) =
   (match (t1, t2) with
   | (T (bt1, neg_list1), T (bt2, neg_list2)) ->
     let rec iterate_neg neg1 bt2 =
@@ -71,20 +71,20 @@ let rec is_subtype_t (t1:t) (t2:t) =
 (* Returns true if t1 is subtype of t2, false otherwise.
    t1 and t2 are both tau type
    See commit 31a09f,Definition 1.11. *)
-let rec is_subtype tau1 tau2 =
-  let rec iterate_tau2 nc1 tau2 =
+let is_subtype tau1 tau2 =
+  let rec iterate_tau2 t1 nc1 tau2 =
     match tau2 with
-    | (t2, nc2)::tl -> if (nc1 = nc2) then true else iterate_tau2 nc1 tl
+    | (t2, nc2)::tl -> if (nc1 = nc2) then is_subtype_t t1 t2 else iterate_tau2 t1 nc1 tl
     | _ -> false
   in
   let rec iterate_tau1 tau1 tau2 =
     match tau1 with
-    | (t1, nc1)::tl -> if iterate_tau2 nc1 tau2 then is_subtype tl tau2 else false
+    | (t1, nc1)::tl -> if iterate_tau2 t1 nc1 tau2 then iterate_tau1 tl tau2 else false
     | _ -> true
   in iterate_tau1 tau1 tau2;;
 
 (* Check whether bt1 equals bt2 *)
-let rec equals_bt (bt1:bt) (bt2:bt) =
+let equals_bt (bt1:bt) (bt2:bt) =
     match (bt1, bt2) with
     | (LStar , LStar) -> true
     | (LInt, LInt) -> true
@@ -174,14 +174,14 @@ let rec tb_pattern_not_match bt pattern =
         | (Lab labp, pa)::tl -> if iterate_record lr labp pa then true else iterate_pattern lr tl
         | _ -> false
    in iterate_pattern lr pr
- | (LRecord lr, _) -> true
+ | (LRecord _, _) -> true
  | (LEmpty, _) -> false;;
 
 (* Returns true if t matches the pattern.
    See commit 31a09f, Def 1.3 Rule 1*)
 let t_pattern_match (t:t) pattern =
    match t with
-   | T (bt, neg) -> tb_pattern_match bt pattern;;
+   | T (bt, _) -> tb_pattern_match bt pattern;;
 
 (* Returns true if t matches the pattern.
    Don't have the definition yet in commit 31a09f

@@ -12,7 +12,7 @@ type body = Int of int | True | False | Closure of body * env | Function of iden
           | Plus of ident * ident | Minus of ident * ident | LessThan of ident * ident | Equals of ident * ident
           | And of ident * ident | Or of ident * ident | Not of ident
           | Match of ident * (pattern * expr) list
-          | TaggedFunction of ident * tagged_expr | TaggedMatch of ident * (pattern * tagged_expr) list
+          | TaggedFunction of ident * tau * tagged_expr | TaggedMatch of ident * (pattern * tagged_expr) list
           | TaggedClosure of body * tagged_env
 and env = (ident * body) list
 and tagged_env = (ident * (body * nonce)) list
@@ -29,14 +29,14 @@ exception WrongFormatOfDataFlow;;
 
 let rec untag_program (program:tagged_expr) =
   match program with
-  | TaggedClause (x, t, TaggedFunction (xx, e))::tl -> Clause (x, Function (xx, untag_program e))::(untag_program tl)
-  | TaggedClause (x, t, TaggedMatch (xx, pa))::tl ->
+  | TaggedClause (x, _, TaggedFunction (xx,_, e))::tl -> Clause (x, Function (xx, untag_program e))::(untag_program tl)
+  | TaggedClause (x, _, TaggedMatch (xx, pa))::tl ->
     let rec untag_pattern pa =
       (match pa with
        | (p, e)::ttll -> (p, untag_program e)::(untag_pattern ttll)
        | _ ->[])
     in Clause (x, Match (xx, untag_pattern pa))::(untag_program tl)
-  | TaggedClause (x, t, b)::tl -> Clause (x, b)::(untag_program tl)
+  | TaggedClause (x, _, b)::tl -> Clause (x, b)::(untag_program tl)
   | _ -> [];;
 
 let rec tag_program (program: expr) tags =
@@ -45,7 +45,7 @@ let rec tag_program (program: expr) tags =
     | (Ident x1, tau)::tl -> if x = x1 then Tau tau else find_tau tl x
     | _ -> Tau [(T(LStar, []), Nonce (-1))]
   in match program with
-  | Clause (Ident x1, Function (x2, e))::tl -> TaggedClause (Ident x1, find_tau tags x1, TaggedFunction (x2, tag_program e tags))::(tag_program tl tags)
+  | Clause (Ident x1, Function (Ident x2, e))::tl -> TaggedClause (Ident x1, find_tau tags x1, TaggedFunction (Ident x2,(find_tau tags x2), tag_program e tags))::(tag_program tl tags)
   | Clause (Ident x1, Match (x2, pa))::tl ->
     let rec tag_pattern pa =
       (match pa with
