@@ -1,4 +1,5 @@
 open OUnit;;
+#directory "..";;
 open Typeinference;;
 open Typechecker;;
 open Layout;;
